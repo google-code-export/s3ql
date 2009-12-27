@@ -13,7 +13,7 @@ export_symbols = ['fuse_mount', 'fuse_lowlevel_new', 'fuse_add_direntry',
                  'fuse_session_loop_mt', 'fuse_session_remove_chan',
                  'fuse_remove_signal_handlers', 'fuse_session_destroy',
                  'fuse_unmount', 'fuse_req_ctx', 'fuse_lowlevel_ops',
-                 'fuse_session_loop' ]
+                 'fuse_session_loop', 'ENOATTR', 'ENOTSUP' ]
 
 # Import ctypeslib
 basedir = os.path.abspath(os.path.dirname(sys.argv[0]))

@@ -19,8 +19,8 @@ from time import sleep
 from getpass import getpass
 
 __all__ = [ "decrease_refcount",  "get_cachedir", "init_logging",
-           "get_credentials", "get_dbfile", "get_inode", "get_path",
-           "increase_refcount", "unused_name", "get_inodes",
+           "get_credentials", "get_dbfile", "inode_for_path", "get_path",
+           "increase_refcount", "unused_name", 
            "update_atime", "update_mtime", "update_ctime", 
            "waitfor", "ROOT_INODE", "writefile", "ExceptionStoringThread",
            "EmbeddedException", 'CTRL_NAME', 'CTRL_INODE' ]
@@ -140,19 +140,11 @@ def update_mtime(inode, conn):
     conn.execute("UPDATE inodes SET mtime=? WHERE id=?",
                 (time.time() - time.timezone, inode))
 
-def get_inode(path, conn):
-    """Returns inode of object at `path`.
+
+def inode_for_path(path, conn):
+    """Return inode of directory entry at `path`
     
-    Raises `KeyError` if the path does not exist.
-    """
-    return get_inodes(path, conn)[-1]
-    
-def get_inodes(path, conn):
-    """Returns the inodes of the elements in `path`.
-    
-    The first inode of the resulting list will always be the inode
-    of the root directory. Raises `KeyError` if the path
-    does not exist.
+     Raises `KeyError` if the path does not exist.
     """
     
     if not isinstance(path, bytes):
@@ -174,11 +166,12 @@ def get_inodes(path, conn):
             inode = conn.get_val("SELECT inode FROM contents WHERE name=? AND parent_inode=?",
                                 (el, inode))
         except StopIteration:
-            raise KeyError('Path does not exist', path)
+            raise KeyError('Path %s does not exist' % path)
         
         visited.append(inode)
+    
+    return visited[-1]
 
-    return visited
     
 def get_path(name, inode_p, conn):
     """Returns the full path of `name` with parent inode `inode_p`.
@@ -347,7 +340,7 @@ def unused_name(path, conn):
     path = path + b'-'
     try:
         while True:
-            get_inode(newpath, conn)            
+            inode_for_path(newpath, conn)            
             i += 1
             newpath = path + bytes(i)
             
