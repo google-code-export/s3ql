@@ -6,16 +6,14 @@
 
 from __future__ import unicode_literals
 from contextlib import contextmanager
-from s3ql import fs
 from s3ql.multi_lock import MultiLock
 from s3ql.ordered_dict import OrderedDict
 from s3ql.common import ExceptionStoringThread
-import errno
 import logging
 import os
 import threading
 import time
-import psyco
+#import psyco
 
 # Pylint has trouble to recognise the type of elements in the OrderedDict
 #pylint: disable-msg=E1103
@@ -236,11 +234,7 @@ class S3Cache(object):
 
         # If still not found
         if waited >= self.timeout:
-            if not self.expect_mismatch:
-                log.error("Timeout when waiting for propagation of %s!" 
-                          "Filesystem is probably corrupted (or S3 is having problems), "
-                          "run fsck.s3ql as soon as possible.", s3key)
-            raise fs.FUSEError(errno.EIO, fatal=True)
+            raise RuntimeError("Timeout when waiting for propagation of %s" % s3key)
             
         self.bucket.fetch_to_file(s3key, cachepath) 
         log.debug('Object %s fetched successfully.', s3key)
@@ -540,5 +534,5 @@ class UnlinkBlocksThread(ExceptionStoringThread):
 
                 
 # Optimize logger calls
-psyco.bind(logging.getLogger)        
-psyco.bind(logging.Logger.debug)        
+#psyco.bind(logging.getLogger)        
+#psyco.bind(logging.Logger.debug)        

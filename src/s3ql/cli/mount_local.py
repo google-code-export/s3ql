@@ -11,7 +11,8 @@ from optparse import OptionParser
 from time import sleep
 from s3ql.common import init_logging
 from s3ql.database import ConnectionManager
-from s3ql import fs, s3, mkfs, fsck, llfuse
+from s3ql import fs, s3, mkfs, fsck
+import llfuse
 from s3ql.s3cache import S3Cache 
 import os
 import tempfile
@@ -115,7 +116,7 @@ def main():
         cache =  S3Cache(bucket, cachedir, options.cachesize, dbcm,
                          timeout=options.propdelay+1)
         try:
-            fuse_opts = [ b"nonempty", b'fsname=s3ql_local', b'debug' ]
+            fuse_opts = [ b"nonempty", b'fsname=s3ql_local' ]
             #              b'large_read', b'big_writes' ]
             if options.allow_others:
                 fuse_opts.append(b'allow_others')
@@ -125,13 +126,12 @@ def main():
                 fuse_opts.append(b'default_permissions')
                 
             operations = fs.Operations(cache, dbcm, not options.atime)
-            llfuse.init(operations)
+            server = llfuse.Server(operations, mountpoint, fuse_opts)
             
             # Switch to background if necessary
             init_logging(options.fg, options.quiet, options.debug, options.debuglog)
             
-            llfuse.main(mountpoint, fuse_opts, single=options.single, 
-                        foreground=options.fg)
+            server.main(single=options.single, foreground=options.fg)
             
         finally:
             cache.close()

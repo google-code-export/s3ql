@@ -18,7 +18,7 @@ from s3ql.database import NoUniqueValueError
 from contextlib import contextmanager
 from s3ql import fs, s3cache
 from s3ql.common import (writefile, get_path, ROOT_INODE, CTRL_INODE,
-                         unused_name, get_inode)
+                         unused_name)
 
 __all__ = [ "fsck" ]
 
