@@ -1,12 +1,16 @@
-#!/usr/bin/env python
-#
-#    Copyright (C) 2008  Nikolaus Rath <Nikolaus@rath.org>
-#
-#    This program can be distributed under the terms of the GNU LGPL.
-#
+'''
+$Id$
 
-from __future__ import unicode_literals
-from __future__ import division
+Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
+
+This program can be distributed under the terms of the GNU LGPL.
+'''
+
+from __future__ import unicode_literals, division, print_function
+
+# FIXME: Make ctypes invocations more platform independent
+# by generating protypes from headers during build
+
 import ctypes
 from ctypes import c_char_p, c_size_t, c_int, c_void_p
 import sys

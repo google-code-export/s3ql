@@ -1,14 +1,16 @@
-#
-#    Copyright (C) 2008  Nikolaus Rath <Nikolaus@rath.org>
-#
-#    This program can be distributed under the terms of the GNU LGPL.
-#
+'''
+$Id$
+
+Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
+
+This program can be distributed under the terms of the GNU LGPL.
+'''
+
+from __future__ import unicode_literals, division, print_function
 
 # pylint has serios trouble with the boto object
 #pylint: disable-msg=E1103
 
-
-from __future__ import unicode_literals
 import hashlib
 from time import sleep
 from datetime import datetime
