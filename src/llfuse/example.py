@@ -25,18 +25,23 @@ class XmpOperations(Operations):
                   (b'..', { 'st_ino': 1,
                            'st_mode': stat.S_IFDIR | 0755,
                            'st_nlink': 2}),
-                  (b'file', { 'st_ino': 2, 'st_nlink': 1,
-                              'st_mode': stat.S_IFREG | 0644 }) ]
+                  (b'lost+found', { 'st_ino': 2,
+                           'st_mode': stat.S_IFDIR | 0755,
+                           'st_nlink': 2}), ]
+                           
+                  #(b'file', { 'st_ino': 2, 'st_nlink': 1,
+                  #            'st_mode': stat.S_IFREG | 0644 }) ]
         
         # Try to overflow readdir() bufer
-        file_name_len = 40
-        files_required = (2 * 4096) // file_name_len
-        for i in range(files_required):
-            self.entries.append(
-                  ('%0*d' % (file_name_len, i),
-                   { 'st_ino': 3, 
-                     'st_nlink': files_required,
-                     'st_mode': stat.S_IFREG | 0644 }))
+        if False:
+            file_name_len = 40
+            files_required = (2 * 4096) // file_name_len
+            for i in range(files_required):
+                self.entries.append(
+                      ('%0*d' % (file_name_len, i),
+                       { 'st_ino': 3, 
+                         'st_nlink': files_required,
+                         'st_mode': stat.S_IFREG | 0644 }))
             
         
         self.contents = { # Inode: Contents
@@ -100,3 +105,6 @@ class XmpOperations(Operations):
     def access(self, inode, mode, ctx, get_sup_gids):
         return True
 
+    def releasedir(self, fh):
+        return
+    

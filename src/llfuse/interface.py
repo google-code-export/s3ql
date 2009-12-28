@@ -452,8 +452,8 @@ class Server(object):
         
         log.debug('Handling flush(%d)', fi.contents.fh)
         self.operations.flush(fi.contents.fh)
-        log.debug('Calling fuse_reply_none')
-        libfuse.fuse_reply_none(req)
+        log.debug('Calling fuse_reply_err(0)')
+        libfuse.fuse_reply_err(req, 0)
         
         
     def fuse_fsync(self, req, ino, datasync, fi):
@@ -465,8 +465,8 @@ class Server(object):
         
         log.debug('Handling fsync(%d, %s)', fi.contents.fh, datasync != 0)
         self.operations.fsync(fi.contents.fh, datasync != 0)
-        log.debug('Calling fuse_reply_none')
-        libfuse.fuse_reply_none(req)
+        log.debug('Calling fuse_reply_err(0)')
+        libfuse.fuse_reply_err(req, 0)
         
         
     def fuse_fsyncdir(self, req, ino, datasync, fi):
@@ -478,8 +478,8 @@ class Server(object):
         
         log.debug('Handling fsyncdir(%d, %s)', fi.contents.fh, datasync != 0)   
         self.operations.fsyncdir(fi.contents.fh, datasync != 0) 
-        log.debug('Calling fuse_reply_none')
-        libfuse.fuse_reply_none(req)
+        log.debug('Calling fuse_reply_err(0)')
+        libfuse.fuse_reply_err(req, 0)
         
         
     def fuse_getxattr(self, req, ino, name, size):
@@ -689,8 +689,8 @@ class Server(object):
     
         log.debug('Handling release(%d)', fi.contents.fh)
         self.operations.release(fi.contents.fh)
-        log.debug('Calling fuse_reply_none')
-        libfuse.fuse_reply_none(req)
+        log.debug('Calling fuse_reply_err(0)')
+        libfuse.fuse_reply_err(req, 0)
         
     
     def fuse_releasedir(self, req, inode, fi):
@@ -698,31 +698,31 @@ class Server(object):
     
         log.debug('Handling releasedir(%d)', fi.contents.fh)
         self.operations.releasedir(fi.contents.fh)
-        log.debug('Calling fuse_reply_none')
-        libfuse.fuse_reply_none(req)
+        log.debug('Calling fuse_reply_err(0)')
+        libfuse.fuse_reply_err(req, 0)
             
     def fuse_removexattr(self, req, inode, name):
         '''Remove extended attribute'''
         
         log.debug('Handling removexattr(%d, %s)', inode, string_at(name))
         self.operations.removexattr(inode, string_at(name))
-        log.debug('Calling fuse_reply_none')
-        libfuse.fuse_reply_none(req)
+        log.debug('Calling fuse_reply_err(0)')
+        libfuse.fuse_reply_err(req, 0)
         
     def fuse_rename(self, req, parent_inode_old, name_old, parent_inode_new, name_new):
         '''Rename a directory entry'''
         
         self.operations.rename(parent_inode_old, string_at(name_old), parent_inode_new,
                           string_at(name_new))
-        log.debug('Calling fuse_reply_none')
-        libfuse.fuse_reply_none(req)
+        log.debug('Calling fuse_reply_err(0)')
+        libfuse.fuse_reply_err(req, 0)
         
     def fuse_rmdir(self, req, inode_parent, name):
         '''Remove a directory'''
         
         self.operations.rmdir(inode_parent, string_at(name))
-        log.debug('Calling fuse_reply_none')
-        libfuse.fuse_reply_none(req)
+        log.debug('Calling fuse_reply_err(0)')
+        libfuse.fuse_reply_err(req, 0)
         
     def fuse_setattr(self, req, inode, stat, to_set, fi):
         '''Change directory entry attributes'''
@@ -756,8 +756,8 @@ class Server(object):
             attr['st_size'] = stat.st_size
             
         self.operations.setattr(inode, attr)
-        log.debug('Calling fuse_reply_none')
-        libfuse.fuse_reply_none(req)   
+        log.debug('Calling fuse_reply_err(0)')
+        libfuse.fuse_reply_err(req, 0)   
                 
     def fuse_setxattr(self, req, inode, name, val, size, flags):
         '''Set an extended attribute'''
@@ -784,8 +784,8 @@ class Server(object):
         
         self.operations.setxattr(inode, string_at(name), string_at(val, size))
         
-        log.debug('Calling fuse_reply_none')
-        libfuse.fuse_reply_none(req)    
+        log.debug('Calling fuse_reply_err(0)')
+        libfuse.fuse_reply_err(req, 0)    
         
     def fuse_statfs(self, req, inode):
         '''Return filesystem statistics'''
@@ -823,8 +823,8 @@ class Server(object):
         
         log.debug('Handling unlink(%d, %r)', parent_inode, string_at(name))
         self.operations.unlink(parent_inode, string_at(name))
-        log.debug('Calling fuse_reply_none')
-        libfuse.fuse_reply_none(req)
+        log.debug('Calling fuse_reply_err(0)')
+        libfuse.fuse_reply_err(req, 0)
         
     def fuse_write(self, req, inode, buf, size, off, fi):
         '''Write into an open file handle'''
