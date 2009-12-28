@@ -1,11 +1,13 @@
 '''
+$Id$
 
-    Copyright (C) 2008  Nikolaus Rath <Nikolaus@rath.org>
+Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
 
-    This program can be distributed under the terms of the GNU LGPL.
+This program can be distributed under the terms of the GNU LGPL.
 '''
 
-from __future__ import unicode_literals
+from __future__ import unicode_literals, division, print_function
+
 import os
 import errno
 import stat

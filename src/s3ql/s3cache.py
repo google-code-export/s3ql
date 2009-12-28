@@ -1,10 +1,13 @@
-#
-#    Copyright (C) 2008-2009  Nikolaus Rath <Nikolaus@rath.org>
-#
-#    This program can be distributed under the terms of the GNU LGPL.
-#
+'''
+$Id$
 
-from __future__ import unicode_literals
+Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
+
+This program can be distributed under the terms of the GNU LGPL.
+'''
+
+from __future__ import unicode_literals, division, print_function
+
 from contextlib import contextmanager
 from s3ql.multi_lock import MultiLock
 from s3ql.ordered_dict import OrderedDict
@@ -13,7 +16,7 @@ import logging
 import os
 import threading
 import time
-#import psyco
+import psyco
 
 # Pylint has trouble to recognise the type of elements in the OrderedDict
 #pylint: disable-msg=E1103
@@ -533,5 +536,5 @@ class UnlinkBlocksThread(ExceptionStoringThread):
 
                 
 # Optimize logger calls
-#psyco.bind(logging.getLogger)        
-#psyco.bind(logging.Logger.debug)        
+psyco.bind(logging.getLogger)        
+psyco.bind(logging.Logger.debug)        

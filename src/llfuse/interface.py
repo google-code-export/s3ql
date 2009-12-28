@@ -1,5 +1,12 @@
 '''
-Interface between the C and Python API. The actual file system
+$Id$
+
+Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
+
+This program can be distributed under the terms of the GNU LGPL.
+
+
+This module defines the interface between the FUSE C and Python API. The actual file system
 is implemented as an `Operations` instance whose methods will
 be called by the `Server` instance within the `mount_and_serve`
 loop.
@@ -32,9 +39,8 @@ The return value and any raised exceptions of `handle_exc` are ignored.
 # (since they are defined in _fields_ instead)
 #pylint: disable-msg=W0212
 
+from __future__ import unicode_literals, division, print_function
 
-from __future__ import division
-from __future__ import unicode_literals
 import ctypes_api as libfuse
 from ctypes import (c_char_p, sizeof, create_string_buffer, addressof, string_at,
                     POINTER, c_char, cast)

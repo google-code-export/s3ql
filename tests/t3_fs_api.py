@@ -1,15 +1,17 @@
-#!/usr/bin/env python
-#
-#    Copyright (C) 2008  Nikolaus Rath <Nikolaus@rath.org>
-#
-#    This program can be distributed under the terms of the GNU LGPL.
-#
+'''
+$Id$
 
-from __future__ import unicode_literals
-from __future__ import division
+Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
+
+This program can be distributed under the terms of the GNU LGPL.
+'''
+
+from __future__ import unicode_literals, division, print_function
+
 from random import randrange
 from s3ql import mkfs, s3, fs, fsck
 from s3ql.common import writefile, get_path
+from llfuse import FUSEError
 from s3ql.s3cache import S3Cache
 from s3ql.database import ConnectionManager
 import os
@@ -40,7 +42,7 @@ class fs_api_tests(unittest.TestCase):
 
         self.cache = S3Cache(self.bucket, self.cachedir, self.blocksize * 5, self.dbcm)
         self.cache.timeout = 1
-        self.server = fs.Server(self.cache, self.dbcm)
+        self.operations = fs.Operations(self.cache, self.dbcm)
 
 
     def tearDown(self):
@@ -66,7 +68,7 @@ class fs_api_tests(unittest.TestCase):
             return fd.read(len_)
       
     def assert_entry_doesnt_exist(self, name):
-        self.assertRaises(fs.FUSEError, self.server.getattr, name)
+        self.assertRaises(FUSEError, self.server.lookup, name)
         
         path = os.path.dirname(name)
         fh = self.server.opendir(path)
