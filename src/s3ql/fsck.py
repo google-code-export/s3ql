@@ -18,7 +18,7 @@ from s3ql.database import NoUniqueValueError
 from contextlib import contextmanager
 from s3ql import fs, s3cache
 from s3ql.common import (writefile, get_path, ROOT_INODE, CTRL_INODE,
-                         unused_name)
+                         unused_name, inode_for_path)
 
 __all__ = [ "fsck" ]
 
@@ -44,13 +44,12 @@ def fsck(conn, cachedir, bucket, checkonly=False):
     Returns `False` if any errors have been found. Throws `FatalFsckError` 
     if the filesystem could not be repaired.
     """
-
-    found_errors = False        
+       
     try:
         conn.execute('SAVEPOINT fsck') 
         
         checker = Checker(conn, cachedir, bucket, checkonly)
-        found_errors = not checker.checkall()
+        fs_ok = checker.checkall()
         
     finally:
         checker.close()
@@ -60,7 +59,7 @@ def fsck(conn, cachedir, bucket, checkonly=False):
             
         conn.execute('RELEASE SAVEPOINT fsck')
             
-    return not found_errors 
+    return fs_ok
 
 class FatalFsckError(Exception):
     """An uncorrectable error has been found in the file system.
@@ -100,7 +99,7 @@ class Checker(object):
         
         self.cachedir2 = tempfile.mkdtemp() + "/"
         self.cache = s3cache.S3Cache(bucket, self.cachedir2, 0, conn)
-        self.server = fs.Server(self.cache, conn)
+        self.server = fs.Operations(self.cache, conn)
                
     def close(self):
         self.cache.close()
@@ -112,21 +111,18 @@ class Checker(object):
             raise RuntimeError('Checker instance was destroyed without calling close()!')
         
            
-    def checkall(self):      
-        found_errors = False
-        
-        for fn in [  
-                   self.check_cache,
-                   self.check_lof,
-                   self.check_dirs,
-                   self.check_loops,
-                   self.check_inode_refcount,
-                   self.check_s3_refcounts,
-                   self.check_keylist ]:
-            if not fn():
-                found_errors = True 
-                
-        return not found_errors
+    def checkall(self):     
+        '''Check file system. Return True if there are no errors.'''
+         
+        return all([
+                   self.check_cache(),
+                   self.check_lof(),
+                   self.check_dirs(),
+                   self.check_loops(),
+                   self.check_inode_refcount(),
+                   self.check_s3_refcounts(),
+                   self.check_keylist() ])
+
     
         
     def detect_fs(self):
@@ -338,7 +334,7 @@ class Checker(object):
         found_errors = False
     
         log.info('Checking inodes...')
-        inode_l = get_inode(b"/lost+found", conn)
+        inode_l = inode_for_path(b"/lost+found", conn)
         
         for (inode, refcount) in conn.query("SELECT id, refcount FROM inodes"):
              

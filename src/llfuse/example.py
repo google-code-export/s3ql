@@ -17,20 +17,15 @@ class XmpOperations(Operations):
     
     def __init__(self):      
         super(XmpOperations, self).__init__()
-        self.entries = [
-                   # name, attr
-                   (b'.', { 'st_ino': 1,
-                           'st_mode': stat.S_IFDIR | 0755,
-                           'st_nlink': 2}),
-                  (b'..', { 'st_ino': 1,
-                           'st_mode': stat.S_IFDIR | 0755,
-                           'st_nlink': 2}),
-                  (b'lost+found', { 'st_ino': 2,
-                           'st_mode': stat.S_IFDIR | 0755,
-                           'st_nlink': 2}), ]
-                           
-                  #(b'file', { 'st_ino': 2, 'st_nlink': 1,
-                  #            'st_mode': stat.S_IFREG | 0644 }) ]
+        self.entries = [ # name, attr
+                        (b'.', { 'st_ino': 1, 'st_mode': stat.S_IFDIR | 0755,
+                                'st_nlink': 2}),
+                        (b'..', { 'st_ino': 1, 'st_mode': stat.S_IFDIR | 0755,
+                                 'st_nlink': 2}),
+                        (b'lost+found', { 'st_ino': 2, 'st_mode': stat.S_IFDIR | 0755,
+                                         'st_nlink': 2}),      
+                        (b'file', { 'st_ino': 3, 'st_nlink': 1, 'st_mode': stat.S_IFREG | 0644 }) 
+                    ]
         
         # Try to overflow readdir() bufer
         if False:
@@ -39,14 +34,14 @@ class XmpOperations(Operations):
             for i in range(files_required):
                 self.entries.append(
                       ('%0*d' % (file_name_len, i),
-                       { 'st_ino': 3, 
+                       { 'st_ino': 4, 
                          'st_nlink': files_required,
                          'st_mode': stat.S_IFREG | 0644 }))
             
         
         self.contents = { # Inode: Contents
-                         2: b'Hello, World\n',
-                         3: b'Stupid file contents\n'
+                         3: b'Hello, World\n',
+                         4: b'Stupid file contents\n'
         }
         
         self.by_inode = dict()

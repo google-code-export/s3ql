@@ -199,9 +199,9 @@ class WrappedConnection(object):
                 cache does not overflow.
     '''
     
-    def __init__(self, conn, retrytime):
-        self.conn = conn.getconnection()
-        self.cur = conn
+    def __init__(self, cur, retrytime):
+        self.conn = cur.getconnection()
+        self.cur = cur
         self.retrytime = retrytime
         self.savepoint_cnt = 0
         
