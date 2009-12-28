@@ -55,8 +55,8 @@ def main():
         incl.include()
     for dep in ctypes_decls_dependencies.find_out_dependencies(include):
         dep.include()
-
-    monkeypatch()              
+           
+    mb.treat_char_ptr_as_binary_data = True
     mb.build_code_creator(shared_library_path)
     code_path = os.path.join(basedir, 'src', 'llfuse')
     mb.write_module(os.path.join(code_path, 'ctypes_api.py'))
@@ -107,8 +107,6 @@ def get_cflags():
         sys.exit(1)
     return cflags.split()
 
-  
-
 def get_library_path():
     '''Find location of libfuse.so'''
     
@@ -133,43 +131,6 @@ def get_library_path():
         sys.exit(1)
         
     return shared_library_path
-
-def monkeypatch():     
-    '''Monkeypatch into py++
-    
-    Makes Py++ generate POINTER(c_char)
-    instead of c_char_p (since c_char_p is assumed to be \0
-    terminated and autoconverted to a Python string.
-    '''
-    
-    from pygccxml import declarations   
-    from pyplusplus.code_creators import ctypes_formatter
-    class my_type_converter_t(ctypes_formatter.type_converter_t): 
-        def visit_pointer( self ):
-            no_ptr = declarations.remove_const( declarations.remove_pointer( self.user_type ) )
-            #if declarations.is_same( declarations.char_t(), no_ptr ):
-            #    return "ctypes.c_char_p"
-            if declarations.is_same( declarations.wchar_t(), no_ptr ):
-                return "ctypes.c_wchar_p"
-            elif declarations.is_same( declarations.void_t(), no_ptr ):
-                return "ctypes.c_void_p"
-            else:
-                base_visitor = my_type_converter_t( self.user_type.base, self.decl_formatter )
-                internal_type_str = declarations.apply_visitor( base_visitor, base_visitor.user_type )
-                return "ctypes.POINTER( %s )" % internal_type_str   
-        def visit_reference( self ):
-            no_ref = declarations.remove_const( declarations.remove_reference( self.user_type ) )
-            #if declarations.is_same( declarations.char_t(), no_ref ):
-            #    return "ctypes.c_char_p"
-            if declarations.is_same( declarations.wchar_t(), no_ref ):
-                return "ctypes.c_wchar_p"
-            elif declarations.is_same( declarations.void_t(), no_ref ):
-                return "ctypes.c_void_p"
-            else:
-                base_visitor = my_type_converter_t( self.user_type.base, self.decl_formatter )
-                internal_type_str = declarations.apply_visitor( base_visitor, base_visitor.user_type )
-                return "ctypes.POINTER( %s )" % internal_type_str         
-    ctypes_formatter.type_converter_t = my_type_converter_t
               
 if __name__ == '__main__':
     main()    
