@@ -245,7 +245,10 @@ class WrappedConnection(object):
                 self._execute(self.cur, 'COMMIT')
 
              
-             
+    
+    # FIXME: This should be rewritten as a context manager,
+    # so that we can make sure that the cursor is
+    # destroyed as soon as it's no longer needed.     
     def query(self, *a, **kw):
         '''Execute the given SQL statement. Return ResultSet.
         
