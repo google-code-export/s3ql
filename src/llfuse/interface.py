@@ -492,7 +492,7 @@ class Server(object):
         '''Get an extended attribute.
         '''
         
-        log.debug('Handling getxattr(%d, %s)', ino, string_at(name))
+        log.debug('Handling getxattr(%d, %r, %d)', ino, string_at(name), size)
         val = self.operations.getxattr(ino, string_at(name))
         if not isinstance(val, bytes):
             raise TypeError("getxattr return value must be of type bytes")
@@ -501,7 +501,7 @@ class Server(object):
             if size == 0:
                 log.debug('Calling fuse_reply_xattr')
                 libfuse.fuse_reply_xattr(req, len(val))
-            elif size <= len(val):
+            elif size >= len(val):
                 log.debug('Calling fuse_reply_buf')
                 libfuse.fuse_reply_buf(req, val, len(val))
             else:
