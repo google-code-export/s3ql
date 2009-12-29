@@ -335,7 +335,7 @@ def main(foreground=False, single=False):
     finally:
         close()
         
-def close(self):
+def close():
     '''Unmount file system and clean up'''
         
     global operations
@@ -695,7 +695,6 @@ def fuse_release(req, inode, fi):
     log.debug('Calling fuse_reply_err(0)')
     libfuse.fuse_reply_err(req, 0)
     
-
 def fuse_releasedir(req, inode, fi):
     '''Release open directory'''
 
@@ -715,6 +714,8 @@ def fuse_removexattr(req, inode, name):
 def fuse_rename(req, parent_inode_old, name_old, parent_inode_new, name_new):
     '''Rename a directory entry'''
     
+    log.debug('Handling rename(%d, %r, %d, %r)', parent_inode_old, string_at(name_old),
+              parent_inode_new, string_at(name_new))
     operations.rename(parent_inode_old, string_at(name_old), parent_inode_new,
                       string_at(name_new))
     log.debug('Calling fuse_reply_err(0)')
@@ -723,6 +724,7 @@ def fuse_rename(req, parent_inode_old, name_old, parent_inode_new, name_new):
 def fuse_rmdir(req, inode_parent, name):
     '''Remove a directory'''
     
+    log.debug('Handling rmdir(%d, %r)', inode_parent, string_at(name))
     operations.rmdir(inode_parent, string_at(name))
     log.debug('Calling fuse_reply_err(0)')
     libfuse.fuse_reply_err(req, 0)
@@ -832,6 +834,7 @@ def fuse_unlink(req, parent_inode, name):
 def fuse_write(req, inode, buf, size, off, fi):
     '''Write into an open file handle'''
     
+    log.debug('Handling write(%d, <buf>, %d, %d, %d)', inode, size, off, fi.contents.fh)
     written = operations.write(fi.contents.fh, off, string_at(buf, size))
     
     log.debug('Calling fuse_reply_write')
