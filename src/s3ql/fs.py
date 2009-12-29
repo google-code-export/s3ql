@@ -9,7 +9,7 @@ This program can be distributed under the terms of the GNU LGPL.
 from __future__ import unicode_literals, division, print_function
 
 import os
-import errno
+import errno 
 import stat
 import llfuse
 import logging
@@ -111,16 +111,16 @@ class Operations(llfuse.Operations):
             fstat["st_uid"] = os.getuid()
             fstat["st_gid"] = os.getgid()
         
-        with self.dbcm() as conn:
-            try:
-                inode = conn.get_val("SELECT inode FROM contents WHERE name=? AND parent_inode=?",
-                                (name, parent_inode))
-            except StopIteration: # not found
-                raise(llfuse.FUSEError(errno.ENOENT))
+        else:
+            with self.dbcm() as conn:
+                try:
+                    inode = conn.get_val("SELECT inode FROM contents WHERE name=? AND parent_inode=?",
+                                    (name, parent_inode))
+                except StopIteration: # not found
+                    raise(llfuse.FUSEError(errno.ENOENT))
+    
+                fstat = self.getattr_all(inode)
 
-            fstat = self.getattr_all(inode)
-
- 
         return fstat
     
     def getattr(self, inode):
@@ -226,12 +226,12 @@ class Operations(llfuse.Operations):
     def getxattr(self, inode, name):
         # Handle S3QL commands
         if inode == CTRL_INODE:
-            if name == 's3ql_errors?':
+            if name == b's3ql_errors?':
                 if self.encountered_errors:
-                    return 'errors encountered'
+                    return b'errors encountered'
                 else:
-                    return 'no errors'
-            elif name == 's3ql_pid?':
+                    return b'no errors'
+            elif name == b's3ql_pid?':
                 return bytes(os.getpid())
             
             return llfuse.FUSEError(errno.EINVAL)
@@ -242,7 +242,7 @@ class Operations(llfuse.Operations):
         
         # Handle S3QL commands
         if inode == CTRL_INODE:
-            if name == 's3ql_flushcache!':
+            if name == b's3ql_flushcache!':
                 # Force all entries out of the cache
                 bak = self.cache.maxsize
                 try:
