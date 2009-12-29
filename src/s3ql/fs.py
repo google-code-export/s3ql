@@ -482,13 +482,14 @@ class Operations(llfuse.Operations):
                     else:
                         self.size_cmtime_cache[inode] = (st[0], timestamp, mtime - time.timezone)
 
-            if 'st_size' in attr:
-                size = attr.pop('st_size')
-                self._truncate(inode, size)
-                
-            if len(attr) > 0:
-                log.warn("setattr: attempted to change immutable attribute(s): %s" % repr(attr))
-                raise llfuse.FUSEError(errno.EINVAL)
+        # We must not hold a database lock when calling s3cache.get
+        if 'st_size' in attr:
+            size = attr.pop('st_size')
+            self._truncate(inode, size)
+            
+        if len(attr) > 0:
+            log.warn("setattr: attempted to change immutable attribute(s): %s" % repr(attr))
+            raise llfuse.FUSEError(errno.EINVAL)
             
 
     def mknod(self, inode_p, name, mode, rdev, ctx):
