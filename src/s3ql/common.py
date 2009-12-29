@@ -269,7 +269,7 @@ def get_credentials(keyfile, key=None):
             
         if not key:
             if sys.stdin.isatty():
-                print "Enter AWS access key: ",
+                print("Enter AWS access key: ", end='')
             key = sys.stdin.readline().rstrip()
            
         if not pw:
@@ -355,7 +355,7 @@ def unused_name(path, conn):
 ROOT_INODE = 1
 
 # Name and inode of the special s3ql control file
-CTRL_NAME = '.__s3ql__ctrl__'
+CTRL_NAME = b'.__s3ql__ctrl__'
 CTRL_INODE = 2
 
 class ExceptionStoringThread(threading.Thread):
@@ -409,3 +409,4 @@ class EmbeddedException(Exception):
                        'Original/inner traceback (most recent call last): \n' ] +
                        traceback.format_tb(self.tb) +
                        traceback.format_exception_only(type(self.exc), self.exc))
+        

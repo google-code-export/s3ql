@@ -16,7 +16,7 @@ from time import sleep
 from datetime import datetime
 import isodate
 from boto.s3.connection import S3Connection
-from contextlib import contextmanager
+from contextlib import contextmanager 
 import boto.exception as bex
 import copy
 from s3ql.common import (waitfor) 

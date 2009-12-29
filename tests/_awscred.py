@@ -30,9 +30,9 @@ def get():
         else:    
             pw = kfile.readline().rstrip()
             aws_credentials = (key, pw)
-            print 'Will use credentials from ~/.awssecret to access AWS.'
+            print ('Will use credentials from ~/.awssecret to access AWS.')
         kfile.close()  
     else:
-        print '~/.awssecret does not exist. Will skip tests requiring valid AWS credentials.'
+        print('~/.awssecret does not exist. Will skip tests requiring valid AWS credentials.')
         
     return aws_credentials
