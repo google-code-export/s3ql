@@ -204,6 +204,6 @@ def warn_if_error(mountpoint):
         
     status = ctypes.string_at(ctypes.addressof(buf), ret)
     if status != 'no errors':
-        print('Some errors occurred while the file system was mounted ("%s"). '
-              'You should examine the log files and run fsck before mounting the '
-              'file system again.' % status, file=sys.stderr)
+        print('Some errors occurred while the file system was mounted.\n'
+              'You should examine the log files and run fsck before mounting the\n'
+              'file system again.', file=sys.stderr)
