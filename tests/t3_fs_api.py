@@ -430,6 +430,28 @@ class fs_api_tests(unittest.TestCase):
         self.fsck()
         
 
+    def test_11_truncate_expire(self):
+        '''Check that setattr() releases db lock before calling s3cache.get'''
+
+        inode_p = self.root_inode
+        name = self.random_name()
+        inode = self.create(inode_p, name)
+        fh = self.server.open(inode, os.O_RDWR)
+        
+        # We need at least two blocks
+        self.server.write(fh, 0, self.random_data(42))
+        self.server.write(fh, self.blocksize, self.random_data(42))
+        self.server.release(fh)
+        
+        # Force cache expiration
+        self.cache.maxsize = 0
+        
+        # Need to set some other attribute to get lock
+        self.server.setattr(inode, { 'st_size': 42,
+                                     'st_uid': 1 })
+        
+        self.fsck()
+        
     def test_10_rename(self):
         dirname_old = self.random_name()
         dirname_new = self.random_name()

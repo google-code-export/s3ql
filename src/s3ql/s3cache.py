@@ -140,6 +140,9 @@ class S3Cache(object):
     def get(self, inode, blockno):
         """Get file handle for s3 object backing `inode` at block `blockno`
         
+        This may cause other blocks to be expired from the cache in
+        separate threads. The caller should therefore not hold any
+        database locks when calling `get`.
         """
         # Debug logging commented out, this function is called too often.
         
@@ -395,7 +398,7 @@ class S3Cache(object):
         
 class ExpireEntryThread(ExceptionStoringThread):
     '''Expire a cache entry. Store the space that is going
-    to be freed in self.size, then signal on self.size_ready.
+       to be freed in self.size, then signal on self.size_ready.
     '''
     
     def __init__(self, s3cache):
@@ -440,7 +443,7 @@ class ExpireEntryThread(ExceptionStoringThread):
                 log.info('Uploading s3 object (%s)...', el.s3key)
                 etag = s3cache.bucket.store_from_file(el.s3key, el.name)
                 s3cache.dbcm.execute("UPDATE s3_objects SET etag=?, size=? WHERE key=?",
-                                  (etag, self.size, el.s3key))
+                                     (etag, self.size, el.s3key))
    
             log.debug('Removing s3 object %s from cache..', el.s3key)
                 
