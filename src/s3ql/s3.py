@@ -8,9 +8,6 @@ This program can be distributed under the terms of the GNU LGPL.
 
 from __future__ import unicode_literals, division, print_function
 
-# pylint has serios trouble with the boto object
-#pylint: disable-msg=E1103
-
 import hashlib
 from time import sleep
 from datetime import datetime

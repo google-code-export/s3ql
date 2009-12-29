@@ -18,8 +18,6 @@ import threading
 import time
 import psyco
 
-# Pylint has trouble to recognise the type of elements in the OrderedDict
-#pylint: disable-msg=E1103
  
 __all__ = [ "S3Cache" ]
 
