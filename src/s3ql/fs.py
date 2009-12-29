@@ -171,10 +171,6 @@ class Operations(llfuse.Operations):
             # For special nodes, return arbitrary values
             fstat["st_size"] = 512
             fstat["st_blocks"] = 1
-
-        # Device ID = 0 unless we have a device node
-        if not stat.S_ISCHR(fstat["st_mode"]) and not stat.S_ISBLK(fstat["st_mode"]):
-            fstat["st_rdev"] = 0
             
         # Timeout
         fstat['attr_timeout'] = 3600
