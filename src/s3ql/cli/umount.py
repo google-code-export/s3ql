@@ -111,9 +111,17 @@ def lazy_umount(mountpoint):
     This function writes to stdout/stderr and calls `system.exit()`.
     '''
     
-    warn_if_error(mountpoint)
+    found_errors = False
+    if not warn_if_error(mountpoint):
+        found_errors = True
     umount_cmd = ('fusermount', '-u', '-z', mountpoint)
-    sys.exit(subprocess.call(umount_cmd))
+    if not subprocess.call(umount_cmd) == 0:
+        found_errors = True
+        
+    if found_errors:
+        sys.exit(1)
+    else:
+        sys.exit(0)
         
         
 def blocking_umount(mountpoint):
@@ -121,6 +129,8 @@ def blocking_umount(mountpoint):
     
     This function writes to stdout/stderr and calls `system.exit()`.
     '''
+    
+    found_errors = False
     
     libc = import_libc()
     ctrlfile = os.path.join(mountpoint, CTRL_NAME) 
@@ -131,7 +141,8 @@ def blocking_umount(mountpoint):
         print('Failed to issue cache flush command: %s. Continuing anyway..' %
                os.strerror(ctypes.get_errno()), file=sys.stderr)    
     
-    warn_if_error(mountpoint)
+    if not warn_if_error(mountpoint):
+        found_errors = True
       
     # Get pid
     log.debug('Trying to get pid')
@@ -143,7 +154,12 @@ def blocking_umount(mountpoint):
                   'Unable to determine upload status, upload might still be in progress '
                   'after umount command return.', 
                   os.strerror(ctypes.get_errno()))
-        sys.exit(subprocess.call(['fusermount', '-u', mountpoint]))
+        if subprocess.call(['fusermount', '-u', mountpoint]) != 0:
+            found_errors = True
+        if found_errors:
+            sys.exit(1)
+        else:
+            sys.exit(0)
         
     pid = int(ctypes.string_at(buf, ret))
     
@@ -184,12 +200,16 @@ def blocking_umount(mountpoint):
         if step < 10:
             step *= 2    
         
-    sys.exit(0)
+    if found_errors:
+        sys.exit(1)
+    else:
+        sys.exit(0)
     
 def warn_if_error(mountpoint):
     '''Check if file system encountered any errors
     
-    If there were errors, a warning is printed to stdout.
+    If there were errors, a warning is printed to stdout and the
+    function returns False.
     '''
     
     libc = import_libc()
@@ -206,4 +226,7 @@ def warn_if_error(mountpoint):
     if status != 'no errors':
         print('Some errors occurred while the file system was mounted.\n'
               'You should examine the log files and run fsck before mounting the\n'
-              'file system again.', file=sys.stderr)
+              'file system again.', file=sys.stderr) 
+        return False
+    else:
+        return True
