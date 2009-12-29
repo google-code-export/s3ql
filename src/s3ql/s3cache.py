@@ -149,7 +149,7 @@ class S3Cache(object):
                     s3key = conn.get_val("SELECT s3key FROM blocks WHERE inode=? AND blockno=?", 
                                         (inode, blockno))
                     #log.debug('s3key is %s', s3key)
-                except StopIteration:
+                except KeyError:
                     # Create and add to cache
                     log.debug('creating new s3 object')
                     with conn.transaction():
