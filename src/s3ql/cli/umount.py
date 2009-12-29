@@ -49,7 +49,7 @@ def parse_args():
                             "This option can be specified multiple times.")
     parser.add_option("--quiet", action="store_true", default=False,
                       help="Be really quiet")
-    parser.add_option('--lazy', "-l", action="store_true", default=False,
+    parser.add_option('--lazy', "-z", action="store_true", default=False,
                       help="Lazy umount. Detaches the filesystem immediately, even if there "
                       'are still open files. The file system is uploaded in the background '
                       'once all open files have been closed.')
