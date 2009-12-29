@@ -20,9 +20,6 @@ from s3ql import s3, fsck
 import sys
 import apsw
 
-# This is a very big method with lots of branches, variables
-# and statements
-#pylint: disable-msg=R0912,R0914,R0915
 def main():
     
     # 

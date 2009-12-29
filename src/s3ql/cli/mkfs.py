@@ -20,9 +20,6 @@ from s3ql.common import init_logging, get_credentials, get_cachedir, get_dbfile
 from s3ql.database import WrappedConnection
 import apsw
 
-# This is a very big method with lots of branches, variables
-# and statements
-#pylint: disable-msg=R0912,R0914,R0915
 def main():
     #
     # Parse options
