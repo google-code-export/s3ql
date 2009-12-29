@@ -9,7 +9,7 @@ This program can be distributed under the terms of the GNU LGPL.
 from __future__ import unicode_literals, division, print_function
 
 import tempfile
-import unittest
+import unittest 
 from time import time
 from s3ql import mkfs, s3
 from s3ql.common import ROOT_INODE

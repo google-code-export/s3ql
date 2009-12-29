@@ -11,7 +11,7 @@ from __future__ import unicode_literals, division, print_function
 import shutil
 import os
 import stat
-from os.path  import basename
+from os.path  import basename 
 from random   import randrange
 from s3ql.common import waitfor
 import filecmp
