@@ -39,7 +39,6 @@ def main():
     # Foreground logging until we daemonize
     init_logging(True, options.quiet, options.debug, options.debuglog)
     
-
     # Check mountpoint
     if not os.path.exists(options.mountpoint):
         log.error('Mountpoint does not exist.\n')
@@ -114,6 +113,8 @@ def parse_args():
                       "written several times during a single write() or read() operation." )    
     
     (options, pps) = parser.parse_args()
+    
+    options.s3timeout = options.propdelay+1
     
     #
     # Verify parameters
