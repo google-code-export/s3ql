@@ -388,23 +388,6 @@ class Checker(object):
                     conn.execute('DELETE FROM s3_objects WHERE key=?', (key,))
                     
         return not found_errors     
-    
-    @staticmethod
-    def fabricate_dbcm(conn):
-        '''Modify a connection to look like a ConnectionManager.
-        
-        Actually, the object will always return the same connection
-        and must only be used in single threaded applications.
-        '''
-        
-        class dummy(conn.__class__):
-            # We don't need __init__
-            #pylint: disable-msg=W0232
-            @contextmanager
-            def __call__(self):
-                yield self
-                      
-        conn.__class__ = dummy
        
     
     def check_keylist(self):
