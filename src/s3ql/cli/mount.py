@@ -132,7 +132,7 @@ def run_server(bucket, cachedir, dbcm, options):
                      timeout=options.propdelay+1)
     try:    
         operations = fs.Operations(cache, dbcm, not options.atime)
-        server = llfuse.Server(operations, options.mountpoint, fuse_opts)
+        llfuse.init(operations, options.mountpoint, fuse_opts)
         
         # Switch to background logging if necessary
         init_logging(options.fg, options.quiet, options.debug, options.debuglog)
@@ -141,7 +141,7 @@ def run_server(bucket, cachedir, dbcm, options):
         # Note that profiling only works in single threaded mode.
         #cProfile.run('server.main(options.single, options.fg)',
         #             '/home/nikratio/profile_psyco.dat')
-        server.main(options.single, options.fg)
+        llfuse.main(options.single, options.fg)
         
     finally:
         log.info("Filesystem unmounted, committing cache...")
