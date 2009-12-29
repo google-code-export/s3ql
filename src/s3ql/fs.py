@@ -116,7 +116,7 @@ class Operations(llfuse.Operations):
                 try:
                     inode = conn.get_val("SELECT inode FROM contents WHERE name=? AND parent_inode=?",
                                     (name, parent_inode))
-                except StopIteration: # not found
+                except KeyError: # not found
                     raise(llfuse.FUSEError(errno.ENOENT))
     
                 fstat = self.getattr_all(inode)

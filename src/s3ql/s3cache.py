@@ -486,7 +486,7 @@ class UnlinkBlocksThread(ExceptionStoringThread):
                             (s3key, cur_off) = \
                                 conn.get_row("SELECT s3key,blockno FROM blocks WHERE inode=? "
                                             "AND blockno >= ? LIMIT 1", (inode, blockno))
-                        except StopIteration:    # No keys left
+                        except KeyError:    # No keys left
                             self.blocks_remaining = False
                             return
                         

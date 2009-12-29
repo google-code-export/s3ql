@@ -323,7 +323,7 @@ class WrappedConnection(object):
     def get_val(self, *a, **kw):
         """Executes a select statement and returns first element of first row.
         
-        If there is no result row, raises StopIteration. If there is more
+        If there is no result row, raises KeyError. If there is more
         than one row, raises NoUniqueValueError.
         """
 
@@ -340,12 +340,15 @@ class WrappedConnection(object):
     def get_row(self, *a, **kw):
         """Executes a select statement and returns first row.
         
-        If there are no result rows, raises StopIteration. If there is more
+        If there are no result rows, raises KeyError. If there is more
         than one result row, raises RuntimeError.
         """
 
         res = ResultSet(self._execute(self.cur, *a, **kw))
-        row = res.next()
+        try:
+            row = res.next()
+        except StopIteration:
+            raise KeyError('Query returned empty result set')
         try:
             res.next()
         except StopIteration:
