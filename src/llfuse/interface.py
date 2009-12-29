@@ -188,8 +188,6 @@ def stat_to_dict(stat):
     '''Convert ``struct stat`` to dict'''
         
     attr = dict()
-    # Yes, protected member
-    #pylint: disable-msg=W0212
     for field in type(stat)._fields_:
         if field.startswith('__'):
             continue
@@ -641,9 +639,6 @@ def fuse_readlink(req, inode):
     
 def fuse_readdir(req, ino, bufsize, off, fi):
     '''Read directory entries'''       
-        
-    # Lots of variables, but no simplification possible
-    #pylint: disable-msg=R0914
     
     log.debug('Handling readdir(%d, %d, %d, %d)', ino, bufsize, off, fi.contents.fh)
     
