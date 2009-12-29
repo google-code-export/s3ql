@@ -129,7 +129,7 @@ def run_server(bucket, cachedir, dbcm, options):
     
     fuse_opts = get_fuse_opts(options) 
     cache =  S3Cache(bucket, cachedir, options.cachesize, dbcm,
-                     timeout=options.propdelay+1)
+                     timeout=options.s3timeout)
     try:    
         operations = fs.Operations(cache, dbcm, not options.atime)
         llfuse.init(operations, options.mountpoint, fuse_opts)
@@ -246,8 +246,8 @@ def parse_args():
                       'they are mounted at the same time. '
                       'You should try to always use the same location here, so that S3QL can detect '
                       'and, as far as possible, recover from unclean umounts. Default is ~/.s3ql.')
-    parser.add_option("--s3timeout", type="int", default=50,
-                      help="Maximum time to wait for propagation in S3 (default: %default)")
+    parser.add_option("--s3timeout", type="int", default=120,
+                      help="Maximum time in seconds to wait for propagation in S3 (default: %default)")
     parser.add_option("--cachesize", type="int", default=51200,
                       help="Cache size in kb (default: 51200 (50 MB)). Should be at least 10 times "
                       "the blocksize of the filesystem, otherwise an object may be retrieved and "
