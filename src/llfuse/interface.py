@@ -190,18 +190,18 @@ def stat_to_dict(stat):
     '''Convert ``struct stat`` to dict'''
         
     attr = dict()
-    for field in type(stat)._fields_:
-        if field.startswith('__'):
+    for (name, type_) in libfuse.stat._fields_:
+        if name.startswith('__'):
             continue
         
-        if field in ('st_atim', 'st_mtim', 'st_ctim'):
-            key = field + 'e' 
-            attr[key] = getattr(stat, field).tv_sec + getattr(stat, field).tv_nsec / 10**9  
-        elif field in ('st_atimespec', 'st_mtimespec', 'st_ctimespec'):
+        if name in ('st_atim', 'st_mtim', 'st_ctim'):
+            key = name + 'e' 
+            attr[key] = getattr(stat, name).tv_sec + getattr(stat, name).tv_nsec / 10**9  
+        elif name in ('st_atimespec', 'st_mtimespec', 'st_ctimespec'):
             key = field[:-4]
-            attr[key] = getattr(stat, field).tv_sec + getattr(stat, field).tv_nsec / 10**9     
+            attr[key] = getattr(stat, name).tv_sec + getattr(stat, name).tv_nsec / 10**9     
         else:
-            attr[field] = getattr(stat, field)
+            attr[name] = getattr(stat, name)
             
     return attr
             
@@ -734,14 +734,11 @@ def fuse_rmdir(req, inode_parent, name):
 def fuse_setattr(req, inode, stat, to_set, fi):
     '''Change directory entry attributes'''
     
-    # Make sure we know all the flags
-    if (to_set & ~(libfuse.FUSE_SET_ATTR_ATIME | libfuse.FUSE_SET_ATTR_GID |
-                   libfuse.FUSE_SET_ATTR_MODE | libfuse.FUSE_SET_ATTR_MTIME |
-                   libfuse.FUSE_SET_ATTR_SIZE | libfuse.FUSE_SET_ATTR_SIZE |
-                   libfuse.FUSE_SET_ATTR_UID)) != 0:
-        raise ValueError('unknown flag')
+    # Note: We can't check if we know all possible flags,
+    # because the part of to_set that is not "covered"
+    # by flags seems to be undefined rather than zero.
     
-    attr_all = stat_to_dict(stat)
+    attr_all = stat_to_dict(stat.contents)
     attr = dict()
     
     if (to_set & libfuse.FUSE_SET_ATTR_MTIME) != 0:
@@ -760,7 +757,7 @@ def fuse_setattr(req, inode, stat, to_set, fi):
         attr['st_gid'] = stat.st_gid            
     
     if (to_set & libfuse.FUSE_SET_ATTR_SIZE) != 0:
-        attr['st_size'] = stat.st_size
+        attr['st_size'] = stat.contents.st_size
         
     operations.setattr(inode, attr)
     log.debug('Calling fuse_reply_err(0)')
