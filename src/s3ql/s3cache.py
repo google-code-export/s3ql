@@ -9,6 +9,8 @@ This program can be distributed under the terms of the GNU LGPL.
 from __future__ import unicode_literals, division, print_function
 
 from contextlib import contextmanager
+from llfuse import FUSEError
+import errno
 from s3ql.multi_lock import MultiLock
 from s3ql.ordered_dict import OrderedDict
 from s3ql.common import ExceptionStoringThread
@@ -235,7 +237,10 @@ class S3Cache(object):
 
         # If still not found
         if waited >= self.timeout:
-            raise RuntimeError("Timeout when waiting for propagation of %s" % s3key)
+            if not self.expect_mismatch:
+                log.warn("Timeout when waiting for propagation of %s in Amazon S3.\n"
+                         'Setting a higher timeout with --s3timeout may help.' % s3key)
+            raise FUSEError(errno.EIO)
             
         self.bucket.fetch_to_file(s3key, cachepath) 
         log.debug('Object %s fetched successfully.', s3key)
