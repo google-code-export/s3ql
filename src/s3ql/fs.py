@@ -328,6 +328,8 @@ class Operations(llfuse.Operations):
             conn.execute("INSERT INTO contents(name, inode, parent_inode) VALUES(?,?,?)",
                         (name, inode, inode_p))
             update_mtime(inode_p, conn)
+            
+        return self.getattr_all(inode)
 
 
     def rename(self, inode_p_old, name_old, inode_p_new, name_new):  
