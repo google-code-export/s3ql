@@ -376,11 +376,10 @@ class S3Cache(object):
                 
         log.debug('Flushing for inode %d completed.', inode)
 
-    def close(self):
-        """Uploads all dirty data and cleans the cache.
-        
-        """       
-        log.debug('Closing S3Cache') 
+    def clear(self):
+        """Upload all dirty data and clear cache"""      
+         
+        log.debug('Clearing S3Cache') 
             
         while len(self.keys) > 0:
             self._expire_parallel()

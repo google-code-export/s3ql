@@ -7,7 +7,7 @@ This program can be distributed under the terms of the GNU LGPL.
 '''
 
 from __future__ import unicode_literals, division, print_function
-
+ 
 import os
 from os.path import basename
 import types
@@ -40,7 +40,7 @@ log = logging.getLogger("fsck")
 # for `checkonly` if they want to modify the cache directory or the S3 bucket.
 #
 
-def fsck(conn, cachedir, bucket, checkonly=False):
+def fsck(dbcm, cachedir, bucket, checkonly=False):
     """Checks a file system
     
     Returns `False` if any errors have been found. Throws `FatalFsckError` 
@@ -48,18 +48,18 @@ def fsck(conn, cachedir, bucket, checkonly=False):
     """
        
     try:
-        conn.execute('SAVEPOINT fsck') 
+        dbcm.execute('SAVEPOINT fsck') 
         
-        checker = Checker(conn, cachedir, bucket, checkonly)
+        checker = Checker(dbcm, cachedir, bucket, checkonly)
         fs_ok = checker.checkall()
         
     finally:
         checker.close()
         if checkonly:
             # Roll back all the changes
-            conn.execute('ROLLBACK TO SAVEPOINT fsck')
+            dbcm.execute('ROLLBACK TO SAVEPOINT fsck')
             
-        conn.execute('RELEASE SAVEPOINT fsck')
+        dbcm.execute('RELEASE SAVEPOINT fsck')
             
     return fs_ok
 
@@ -82,8 +82,8 @@ class Checker(object):
                    are found.
     """
        
-    def __init__(self, conn, cachedir, bucket, checkonly):
-        self.conn = conn
+    def __init__(self, dbcm, cachedir, bucket, checkonly):
+        self.dbcm = dbcm
         self.checkonly = checkonly
         self.cachedir = cachedir 
         self.bucket = bucket
@@ -92,19 +92,14 @@ class Checker(object):
         # Make sure we actually have a filesystem
         self.detect_fs()
         
-        self.blocksize = conn.get_val("SELECT blocksize FROM parameters")
+        self.blocksize = dbcm.get_val("SELECT blocksize FROM parameters")
         
-        # Create a server process in case we want to write files
-        # We are running single threaded, so we can just fabricate
-        # a ConnectionManager
-        self.fabricate_dbcm(conn)
-        
-        self.cachedir2 = tempfile.mkdtemp() + "/"
-        self.cache = s3cache.S3Cache(bucket, self.cachedir2, 0, conn)
-        self.server = fs.Operations(self.cache, conn)
+        self.cachedir2 = tempfile.mkdtemp() 
+        self.cache = s3cache.S3Cache(bucket, self.cachedir2, 0, dbcm)
+        self.server = fs.Operations(self.cache, dbcm)
                
     def close(self):
-        self.cache.close()
+        self.cache.clear()
         os.rmdir(self.cachedir2) 
         self.cache = None
         
