@@ -20,5 +20,3 @@ class fuse_kernel_tests(unittest.TestCase):
     
     # FIXME: Check that FUSE does not allow creation of directory
     # entries during rmdir of the directory
-    
- 
