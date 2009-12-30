@@ -61,9 +61,10 @@ class fs_api_tests(unittest.TestCase):
         os.rmdir(self.cachedir)
 
     def fsck(self):
-        pass
-        #self.cache.clear()
-        #self.assertTrue(fsck.fsck(self.dbcm, self.cachedir, self.bucket, checkonly=True))
+        self.cache.clear()
+        with self.dbcm.transaction() as conn:
+            fsck.fsck(conn, self.cachedir, self.bucket, checkonly_=True)
+        self.assertFalse(fsck.found_errors)
 
     def random_name(self):
         self.name_cnt += 1

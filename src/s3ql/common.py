@@ -10,7 +10,6 @@ from __future__ import unicode_literals, division, print_function
 
 import sys
 import os
-import resource
 import stat
 import traceback
 import threading
@@ -21,9 +20,9 @@ from getpass import getpass
 
 __all__ = [ "decrease_refcount",  "get_cachedir", "init_logging",
            "get_credentials", "get_dbfile", "inode_for_path", "get_path",
-           "increase_refcount", "unused_name", 
+           "increase_refcount", 
            "update_atime", "update_mtime", "update_ctime", 
-           "waitfor", "ROOT_INODE", "writefile", "ExceptionStoringThread",
+           "waitfor", "ROOT_INODE", "ExceptionStoringThread",
            "EmbeddedException", 'CTRL_NAME', 'CTRL_INODE' ]
 
 class Filter(object):
@@ -153,30 +152,21 @@ def inode_for_path(path, conn):
     
     # Remove leading and trailing /
     path = path.lstrip(b"/").rstrip(b"/") 
-
-    inode = ROOT_INODE
-    
-    # Root directory requested
-    if not path:
-        return [inode]
     
     # Traverse
-    visited = [inode]
+    inode = ROOT_INODE
     for el in path.split(b'/'):
         try:
             inode = conn.get_val("SELECT inode FROM contents WHERE name=? AND parent_inode=?",
                                 (el, inode))
-        except StopIteration:
+        except KeyError:
             raise KeyError('Path %s does not exist' % path)
-        
-        visited.append(inode)
     
-    return visited[-1]
+    return inode
 
     
 def get_path(name, inode_p, conn):
-    """Returns the full path of `name` with parent inode `inode_p`.
-    """
+    """Return the full path of `name` with parent inode `inode_p`"""
     
     if not isinstance(name, bytes):
         raise TypeError('name must be of type bytes')
@@ -299,58 +289,8 @@ def waitfor(timeout, fn, *a, **kw):
             return True
         
     return False
-    
-def writefile(src, dest, server):
-    """Copies the local file `src' into the fs as `dest`
-    
-    `dest` must not be opened yet by the server.
-    """
 
-    try:
-        destfd = server.open(dest, None)
-    except KeyError:
-        mode = ( stat.S_IFREG | stat.S_IRUSR | stat.S_IWUSR )
-        destfd = server.create(dest, mode)
         
-    srcfh =  open(src, "rb")
-    chunksize = resource.getpagesize()
-
-    buf = srcfh.read(chunksize)
-    off = 0
-    while buf:
-        server.write(buf, off, destfd)
-        off += len(buf)
-        buf = srcfh.read(chunksize)        
-  
-    srcfh.close()
-    
-    server.fsync(True, destfd)
-    server.flush(destfd)
-    server.release(destfd)
-    
-
-def unused_name(path, conn):
-    '''Append suffix to path so that it does not exist
-    '''
-    
-    if not isinstance(path, bytes):
-        raise TypeError('path must be of type bytes')
-    
-    i = 0
-    newpath = path
-    path = path + b'-'
-    try:
-        while True:
-            inode_for_path(newpath, conn)            
-            i += 1
-            newpath = path + bytes(i)
-            
-    except KeyError:
-        pass
-    
-    return newpath
-        
-
 # Define inode of root directory
 ROOT_INODE = 1
 

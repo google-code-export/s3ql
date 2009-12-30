@@ -59,8 +59,7 @@ class fuse_tests(unittest.TestCase):
             
         finally:
             
-            # Umount. We try several times because the mountpoint
-            # is, for some reason, often still busy for a while
+            # Umount as soon as mountpoint is no longer in use
             self.assertTrue(waitfor(5, lambda : 
                                     subprocess.call(['fuser', '-m', '-s', self.base]) == 1))
             path = os.path.join(os.path.dirname(__file__), "..", "bin", "umount.s3ql")            
