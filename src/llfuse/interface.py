@@ -190,7 +190,7 @@ def stat_to_dict(stat):
     '''Convert ``struct stat`` to dict'''
         
     attr = dict()
-    for (name, type_) in libfuse.stat._fields_:
+    for (name, dummy) in libfuse.stat._fields_:
         if name.startswith('__'):
             continue
         
@@ -198,7 +198,7 @@ def stat_to_dict(stat):
             key = name + 'e' 
             attr[key] = getattr(stat, name).tv_sec + getattr(stat, name).tv_nsec / 10**9  
         elif name in ('st_atimespec', 'st_mtimespec', 'st_ctimespec'):
-            key = field[:-4]
+            key = name[:-4]
             attr[key] = getattr(stat, name).tv_sec + getattr(stat, name).tv_nsec / 10**9     
         else:
             attr[name] = getattr(stat, name)
