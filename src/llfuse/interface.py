@@ -734,6 +734,8 @@ def fuse_rmdir(req, inode_parent, name):
 def fuse_setattr(req, inode, stat, to_set, fi):
     '''Change directory entry attributes'''
     
+    log.debug('Handling fuse_setattr(%d)', inode)
+    
     # Note: We can't check if we know all possible flags,
     # because the part of to_set that is not "covered"
     # by flags seems to be undefined rather than zero.
@@ -748,20 +750,27 @@ def fuse_setattr(req, inode, stat, to_set, fi):
         attr['st_atime'] = attr_all['st_atime']
         
     if (to_set & libfuse.FUSE_SET_ATTR_MODE) != 0:
-        attr['st_mode'] = stat.st_mode
+        attr['st_mode'] = attr_all['st_mode']
         
     if (to_set & libfuse.FUSE_SET_ATTR_UID) != 0:
-        attr['st_uid'] = stat.st_uid
+        attr['st_uid'] = attr_all['st_uid']
         
     if (to_set & libfuse.FUSE_SET_ATTR_GID) != 0:
-        attr['st_gid'] = stat.st_gid            
+        attr['st_gid'] = attr_all['st_gid']            
     
     if (to_set & libfuse.FUSE_SET_ATTR_SIZE) != 0:
-        attr['st_size'] = stat.contents.st_size
+        attr['st_size'] = attr_all['st_size']
         
-    operations.setattr(inode, attr)
-    log.debug('Calling fuse_reply_err(0)')
-    libfuse.fuse_reply_err(req, 0)   
+    attr = operations.setattr(inode, attr)
+    
+    attr_timeout = attr.pop('attr_timeout')
+    stat = dict_to_stat(attr)
+    
+    log.debug('Calling fuse_reply_attr')
+    try:
+        libfuse.fuse_reply_attr(req, stat, attr_timeout)
+    except DiscardedRequest:
+        pass
             
 def fuse_setxattr(req, inode, name, val, size, flags):
     '''Set an extended attribute'''

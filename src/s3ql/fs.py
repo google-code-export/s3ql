@@ -490,6 +490,8 @@ class Operations(llfuse.Operations):
         if len(attr) > 0:
             log.warn("setattr: attempted to change immutable attribute(s): %s" % repr(attr))
             raise llfuse.FUSEError(errno.EINVAL)
+        
+        return self.getattr(inode)
             
 
     def mknod(self, inode_p, name, mode, rdev, ctx):
