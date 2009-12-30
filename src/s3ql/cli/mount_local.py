@@ -70,15 +70,16 @@ def main():
         sleep(options.propdelay)
             
         # Do fsck
-        fsck_errors = False
-        if options.fsck and not fsck.fsck(dbcm, cachedir, bucket, checkonly=True):
-            fsck_errors = True
-            log.warn("fsck found errors")
+        if options.fsck:
+            with dbcm.transaction() as conn:
+                fsck.fsck(conn, cachedir, bucket)
+            if fsck.found_errors:
+                log.warn("fsck found errors")
             
     finally:
         os.rmdir(cachedir)
  
-    if operations.encountered_errors or fsck_errors:
+    if operations.encountered_errors or fsck.found_errors:
         sys.exit(1)
     else:
         sys.exit(0)

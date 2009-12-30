@@ -63,9 +63,9 @@ class RemoteCmdTests(unittest.TestCase):
         # Wait for mountpoint to come up
         self.assertTrue(waitfor(10, posixpath.ismount, self.base))
 
-        # Umount. We try several times because the mountpoint
-        # is, for some reason, often still busy for a while
-        self.assertTrue(waitfor(10, lambda : subprocess.call(['fuser', self.base]) == 1))
+        # Umount as soon as mountpoint is no longer in use
+        self.assertTrue(waitfor(5, lambda : 
+                                subprocess.call(['fuser', '-m', '-s', self.base]) == 1))
         path = os.path.join(os.path.dirname(__file__), "..", "bin", "umount.s3ql")            
         self.assertEquals(subprocess.call([path, '--quiet', self.base]), 0)
         
