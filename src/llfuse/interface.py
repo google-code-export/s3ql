@@ -461,7 +461,10 @@ def fuse_flush(req, ino, fi):
     log.debug('Handling flush(%d)', fi.contents.fh)
     operations.flush(fi.contents.fh)
     log.debug('Calling fuse_reply_err(0)')
-    libfuse.fuse_reply_err(req, 0)
+    try:
+        libfuse.fuse_reply_err(req, 0)
+    except DiscardedRequest:
+        pass
     
     
 def fuse_fsync(req, ino, datasync, fi):
@@ -474,7 +477,10 @@ def fuse_fsync(req, ino, datasync, fi):
     log.debug('Handling fsync(%d, %s)', fi.contents.fh, datasync != 0)
     operations.fsync(fi.contents.fh, datasync != 0)
     log.debug('Calling fuse_reply_err(0)')
-    libfuse.fuse_reply_err(req, 0)
+    try:
+        libfuse.fuse_reply_err(req, 0)
+    except DiscardedRequest:
+        pass
     
     
 def fuse_fsyncdir(req, ino, datasync, fi):
@@ -487,7 +493,10 @@ def fuse_fsyncdir(req, ino, datasync, fi):
     log.debug('Handling fsyncdir(%d, %s)', fi.contents.fh, datasync != 0)   
     operations.fsyncdir(fi.contents.fh, datasync != 0) 
     log.debug('Calling fuse_reply_err(0)')
-    libfuse.fuse_reply_err(req, 0)
+    try:
+        libfuse.fuse_reply_err(req, 0)
+    except DiscardedRequest:
+        pass
     
     
 def fuse_getxattr(req, ino, name, size):
@@ -695,7 +704,10 @@ def fuse_release(req, inode, fi):
     log.debug('Handling release(%d)', fi.contents.fh)
     operations.release(fi.contents.fh)
     log.debug('Calling fuse_reply_err(0)')
-    libfuse.fuse_reply_err(req, 0)
+    try:
+        libfuse.fuse_reply_err(req, 0)
+    except DiscardedRequest:
+        pass
     
 def fuse_releasedir(req, inode, fi):
     '''Release open directory'''
@@ -703,7 +715,10 @@ def fuse_releasedir(req, inode, fi):
     log.debug('Handling releasedir(%d)', fi.contents.fh)
     operations.releasedir(fi.contents.fh)
     log.debug('Calling fuse_reply_err(0)')
-    libfuse.fuse_reply_err(req, 0)
+    try:
+        libfuse.fuse_reply_err(req, 0)
+    except DiscardedRequest:
+        pass
         
 def fuse_removexattr(req, inode, name):
     '''Remove extended attribute'''
@@ -711,7 +726,10 @@ def fuse_removexattr(req, inode, name):
     log.debug('Handling removexattr(%d, %s)', inode, string_at(name))
     operations.removexattr(inode, string_at(name))
     log.debug('Calling fuse_reply_err(0)')
-    libfuse.fuse_reply_err(req, 0)
+    try:
+        libfuse.fuse_reply_err(req, 0)
+    except DiscardedRequest:
+        pass
     
 def fuse_rename(req, parent_inode_old, name_old, parent_inode_new, name_new):
     '''Rename a directory entry'''
@@ -721,7 +739,10 @@ def fuse_rename(req, parent_inode_old, name_old, parent_inode_new, name_new):
     operations.rename(parent_inode_old, string_at(name_old), parent_inode_new,
                       string_at(name_new))
     log.debug('Calling fuse_reply_err(0)')
-    libfuse.fuse_reply_err(req, 0)
+    try:
+        libfuse.fuse_reply_err(req, 0)
+    except DiscardedRequest:
+        pass
     
 def fuse_rmdir(req, inode_parent, name):
     '''Remove a directory'''
@@ -729,7 +750,10 @@ def fuse_rmdir(req, inode_parent, name):
     log.debug('Handling rmdir(%d, %r)', inode_parent, string_at(name))
     operations.rmdir(inode_parent, string_at(name))
     log.debug('Calling fuse_reply_err(0)')
-    libfuse.fuse_reply_err(req, 0)
+    try:
+        libfuse.fuse_reply_err(req, 0)
+    except DiscardedRequest:
+        pass
     
 def fuse_setattr(req, inode, stat, to_set, fi):
     '''Change directory entry attributes'''
@@ -798,7 +822,10 @@ def fuse_setxattr(req, inode, name, val, size, flags):
     operations.setxattr(inode, string_at(name), string_at(val, size))
     
     log.debug('Calling fuse_reply_err(0)')
-    libfuse.fuse_reply_err(req, 0)    
+    try:
+        libfuse.fuse_reply_err(req, 0)
+    except DiscardedRequest:
+        pass    
     
 def fuse_statfs(req, inode):
     '''Return filesystem statistics'''
@@ -837,7 +864,10 @@ def fuse_unlink(req, parent_inode, name):
     log.debug('Handling unlink(%d, %r)', parent_inode, string_at(name))
     operations.unlink(parent_inode, string_at(name))
     log.debug('Calling fuse_reply_err(0)')
-    libfuse.fuse_reply_err(req, 0)
+    try:
+        libfuse.fuse_reply_err(req, 0)
+    except DiscardedRequest:
+        pass
     
 def fuse_write(req, inode, buf, size, off, fi):
     '''Write into an open file handle'''
