@@ -279,6 +279,9 @@ class Operations(object):
         `attr` must be a dict with keys corresponding to the attributes of 
         ``struct stat``. `attr` may also include a new value for ``st_size`` which
         means that the file should be truncated or extended.
+        
+        Returns a dict with the new attributs of the directory entry,
+        similar to the one returned by `getattr()`
         '''
         
         raise FUSEError(errno.ENOSYS)
