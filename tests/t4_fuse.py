@@ -41,7 +41,7 @@ class fuse_tests(unittest.TestCase):
               
         # Mount
         path = os.path.join(os.path.dirname(__file__), "..", "bin", "mount.s3ql_local")
-        child = subprocess.Popen([path, "--fg", "--fsck", "--blocksize", "1",
+        child = subprocess.Popen([path, "--fg", "--blocksize", "1", '--fsck',
                                   "--quiet", self.base])
 
         # Wait for mountpoint to come up
@@ -61,7 +61,8 @@ class fuse_tests(unittest.TestCase):
             
             # Umount. We try several times because the mountpoint
             # is, for some reason, often still busy for a while
-            self.assertTrue(waitfor(10, lambda : subprocess.call(['fuser', self.base]) == 1))
+            self.assertTrue(waitfor(5, lambda : 
+                                    subprocess.call(['fuser', '-m', '-s', self.base]) == 1))
             path = os.path.join(os.path.dirname(__file__), "..", "bin", "umount.s3ql")            
             self.assertEquals(subprocess.call([path, '--quiet', self.base]), 0)
             
