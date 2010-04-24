@@ -13,7 +13,7 @@ from optparse import OptionParser
 from s3ql import fs
 from s3ql.backends import s3
 from s3ql.daemonize import daemonize
-from s3ql.backends.common import ChecksumError
+from s3ql.backends.common import ChecksumError, COMPRESS_BZIP2, COMPRESS_LZMA, COMPRESS_ZLIB
 from s3ql.block_cache import BlockCache
 from s3ql.common import (init_logging_from_options, get_backend, get_cachedir, get_dbfile,
                          QuietError, unlock_bucket, get_parameters, get_stdout_handler,
@@ -38,12 +38,6 @@ def main(args=None):
     if args is None:
         args = sys.argv[1:]
 
-    try:
-        import psyco
-        psyco.profile()
-    except ImportError:
-        pass
-
     options = parse_args(args)
     init_logging_from_options(options, 'mount.log')
 
@@ -54,7 +48,7 @@ def main(args=None):
 
         if not bucketname in conn:
             raise QuietError("Bucket does not exist.")
-        bucket = conn.get_bucket(bucketname)
+        bucket = conn.get_bucket(bucketname, compression=options.compression)
 
         # Check that the bucket is in the correct location
         if isinstance(bucket, s3.Bucket):
@@ -307,6 +301,10 @@ def parse_args(args):
     parser.add_option("--profile", action="store_true", default=False,
                       help="Create profiling information. If you don't understand this, "
                            "then you don't need it.")
+    parser.add_option("--bzip2", action="store_true", default=False,
+                      help="Use bzip2 instead of LZMA algorithm for compressing new blocks.")
+    parser.add_option("--zlib", action="store_true", default=False,
+                      help="Use zlib instead of LZMA algorithm for compressing new blocks.")
     (options, pps) = parser.parse_args(args)
 
     #
@@ -316,6 +314,15 @@ def parse_args(args):
         parser.error("Incorrect number of arguments.")
     options.storage_url = pps[0]
     options.mountpoint = pps[1]
+
+    if options.zlib and options.bzip2:
+        parser.error("--bzip2 and --zlib are mutually exclusive.")
+    elif options.zlib:
+        options.compression = COMPRESS_ZLIB
+    elif options.bzip2:
+        options.compression = COMPRESS_BZIP2
+    else:
+        options.compression = COMPRESS_LZMA
 
     if options.profile:
         options.single = True
