@@ -1,0 +1,109 @@
+.. -*- mode: rst -*-
+
+==========
+ Mounting
+==========
+
+
+A S3QL file system is mounted with the `mount.s3ql` command. It has
+the following syntax::
+
+  mount.s3ql [options] <storage url> <mountpoint>
+
+Note that S3QL is not a network file system like `NFS
+<http://en.wikipedia.org/wiki/Network_File_System_%28protocol%29>`_ or
+`CIFS <http://en.wikipedia.org/wiki/CIFS>`_, so an S3QL file system
+can only be mounted on one computer at a time.
+
+You can specify the following options:
+
+  --homedir=HOMEDIR     Directory for log files, cache and authentication
+                        info. Default: `~/.s3ql`
+  --cachesize=CACHESIZE
+                        Cache size in kb (default: 102400 (100 MB)). Should be
+                        at least 10 times the blocksize of the filesystem,
+                        otherwise an object may be retrieved and written
+                        several times during a single write() or read()
+                        operation.
+  --debug=DEBUG         Activate debugging output from specified module. Use
+                        `all` to get debug messages from all modules. This
+                        option can be specified multiple times.
+  --quiet               Be really quiet
+  --allow-other         Normally, only the user who called `mount.s3ql` can access
+                        the mount point. This user then also has full
+                        access to it, independent of individual file
+                        permissions. If the `--allow-other` option is
+                        specified, other users can access the mount
+                        point as well and individual file permissions
+                        are taken into account for all users.
+  --allow-root          Like `--allow_other`, but also allow the root user
+                        to access the mount point.
+  --fg                  Do not daemonize, stay in foreground
+  --single              Run in single threaded mode. If you don't understand
+                        this, then you don't need it.
+  --profile             Create profiling information. If you don't understand
+                        this, then you don't need it.
+
+
+Notes about Caching
+===================
+
+S3QL maintains a local cache of the file system data to speed up
+access. The cache is block based, so it is possible that only parts of
+a file are in the cache.
+
+Maximum Number of Cache Entries
+-------------------------------
+
+The maximum size of the cache can be configured with the `--cachesize`
+option when the file system is mounted. However, there is also a
+second limitation: the maximum number of objects in the cache is
+limited to 768. It is therefore possible that the cache may actually
+never grow up to the maximum cache size, because the maximum number of
+cache elements has been reached. The reason for this limit is that, by
+default, Linux limits the number of open files per process to about
+one thousand and S3QL requires an open file for each cache entry.
+
+If you are bothered by this limitation, you have to configure your
+system to increase the maximum number of open file handles and then
+edit the `MAX_CACHE_ENTRIES` line in `src/s3ql/block_cache.py`. At
+some point, this may become a command line option as well (see `issue
+112 <http://code.google.com/p/s3ql/issues/detail?id=112>`_).
+
+Cache Flushing and Expiration
+-----------------------------
+
+S3QL flushes changed blocks in the cache to the backend whenever a block
+has not been accessed for at least 10 seconds. Note that when a block is
+flushed, it still remains in the cache.
+
+Cache expiration (i.e., removal of blocks from the cache) is only done
+when the maximum cache size is reached. S3QL always expires the least
+recently used blocks first.
+
+Mounting in `/etc/fstab`
+========================
+
+It is also possible to mount an S3QL file system automatically in
+`/etc/fstab`. For that, S3QL has to be installed system-wide (see
+:ref:`inst-s3ql`) and you have to place a copy of the `mount.s3ql`
+command in the `/sbin` directory.
+
+A sample entry for S3QL in `/etc/fstab` would look like
+this::
+
+  s3://my_s3ql_bucket     /mnt/s3     s3ql    homedir=/var/s3ql,allow-other,allow_root  0  0
+
+Note that most likely you will have to specify the `homedir` option
+when mounting from fstab because the `$HOME` environment variable is
+not set in this case (and `mount.s3ql` cannot figure out a sensible
+default for `--homedir` without it).
+
+Note also that you should make sure that the file system is unmounted
+every once in a while. S3QL flushes the file system metadata only when
+the file system is unmounted, so if you had an S3QL file system
+mounted for several days and then your harddisk crashes (so that
+`fsck.s3ql` cannot recover the local metadata), you will loose all the
+changes that you have made since the last successful unmount. Your
+data will still be stored on the backend, but without the metadata it
+will not be linked to any directory entries.
