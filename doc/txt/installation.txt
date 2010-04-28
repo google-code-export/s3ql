@@ -1,0 +1,283 @@
+.. -*- mode: rst -*-
+
+
+==============
+ Installation
+==============
+
+S3QL depends on several other programs and libraries that have to be
+installed first. The best method to satisfy these dependencies depends
+on your distribution.
+
+Ubuntu/Debian
+=============
+
+Starting with Ubuntu 9.10 (Karmic), most of S3QL's dependencies are
+already available as packages and can be installed with following
+command (if you want, you can remove `gccxml` and the packages ending
+in `-dev` again when the installation is complete)::
+
+  sudo aptitude install python-dev libfuse2 libfuse-dev python-paramiko \
+                        gccxml python-pycryptopp libattr1-dev liblzma-dev liblzma0
+
+Additionally, The `Python APSW module
+<http://code.google.com/p/apsw/>`_ needs to be installed from source
+as follows:
+
+#. Download the source from http://code.google.com/p/apsw/downloads/list
+#. Extract the zip file and change into the new directory
+#. Run `python setup.py fetch --sqlite build install --user` to
+   install the module into `~/.local` or run `sudo python setup.py fetch
+   --sqlite build install` to install system-wide.
+
+After that, you need to upgrade your FUSE packages. You can
+download and install updated packages from the S3QL website
+with the commands::
+
+  arch=`dpkg-architecture -qDEB_HOST_ARCH`
+  wget http://s3ql.googlecode.com/files/{libfuse-dev,libfuse2,fuse-utils}_2.8.3_$arch.deb
+  sudo dpkg -i {libfuse-dev,libfuse2,fuse-utils}_2.8.3_$arch.deb
+
+Finally, S3QL also requires the `PyLibLZMA
+<http://pypi.python.org/pypi/pyliblzma>`_ and `unittest2
+<http://pypi.python.org/pypi/unittest2>`_ Python modules. However,
+these modules will be downloaded and installed automatically during
+the S3QL installation if necessary (the PyLibLZMA module needs to
+be version 0.5.3 or newer).
+
+Once all the dependencies have been satisfied as described, you can
+continue with :ref:`inst-s3ql`.
+
+Fedora
+======
+
+Starting with Fedora 12, most of S3QL's dependencies are
+already available as packages and can be installed with following
+command (if you want, you can remove packages ending
+in `-devel` again when the installation is complete)::
+
+  sudo yum install python-devel libattr-devel fuse-devel cmake \
+              pycryptopp python-paramiko xz-devel
+
+In addition to that, the GCC-XML compiler needs to be compiled from
+source as follows:
+
+#. Retrieve the sources from the CVS tree with the command ::
+
+     cvs -d :pserver:anoncvs@www.gccxml.org:/cvsroot/GCC_XML login
+
+   (just press enter when asked for a password) followed by ::
+
+     cvs -d :pserver:anoncvs@www.gccxml.org:/cvsroot/GCC_XML co gccxml
+
+   This will create a new directory called `gccxml` in the current directory.
+
+#. Change into the new `gccxml` directory and create a new
+   sub-directory `gccxml-build` ::
+
+     cd gccxml
+     mkdir gccxml-build
+
+#. Change into the build directory and build and install gccxml with the commands ::
+
+     cd gccxml-build
+     cmake ..
+     make
+     sudo make install
+
+After that, you also have to install the `Python APSW module
+<http://code.google.com/p/apsw/>`_:
+
+#. Download the source from http://code.google.com/p/apsw/downloads/list
+#. Extract the zip file and change into the new directory
+#. Run `python setup.py fetch --sqlite build install --user` to
+   install the module into `~/.local` or run `sudo python setup.py fetch
+   --sqlite build install` to install system-wide.
+
+Finally, S3QL also requires the `PyLibLZMA
+<http://pypi.python.org/pypi/pyliblzma>`_ and `unittest2
+<http://pypi.python.org/pypi/unittest2>`_ Python modules. However,
+these modules will be downloaded and installed automatically during
+the S3QL installation if necessary (the PyLibLZMA module needs to
+be version 0.5.3 or newer).
+
+Once all the dependencies have been satisfied as described, you can
+continue with :ref:`inst-s3ql`.
+
+Thanks to Cliff Stanford for helping with these instructions.
+
+CentOs
+======
+
+Under CentOS 5, you can install most of S3QL's dependencies with the
+following commands, to be run as root: (thanks to `heri16
+<http://code.google.com/u/heri16/>`_)::
+
+  yum install libattr-devel fuse-libs fuse-devel fuse gcc-c++ bzip2 unzip
+
+  wget http://download.fedora.redhat.com/pub/epel/5/i386/epel-release-5-3.noarch.rpm
+  yum --nogpgcheck localinstall epel-release-5-3.noarch.rpm
+  yum --enablerepo=epel install libffi
+  yum --enablerepo=epel install xz-libs xz-devel xz
+
+  wget http://yum.chrislea.com/centos/5/i386/chl-release-5-3.noarch.rpm
+  yum --nogpgcheck localinstall chl-release-5-3.noarch.rpm
+  yum --enablerepo=chl install python26 python26-devel
+
+  wget http://packages.sw.be/rpmforge-release/rpmforge-release-0.5.1-1.el5.rf.i386.rpm
+  yum --nogpgcheck localinstall rpmforge-release-0.5.1-1.el5.rf.i386.rpm
+  yum --enablerepo=rpmforge install cmake
+
+  cvs -d :pserver:anoncvs@www.gccxml.org:/cvsroot/GCC_XML login
+  # (just press enter when prompted for a password)
+  cvs -d :pserver:anoncvs@www.gccxml.org:/cvsroot/GCC_XML co gccxml
+  mkdir gccxml-build
+  cd gccxml-build
+  cmake ../gccxml
+  make
+  make test
+  make install
+  cd ..
+
+  wget http://pypi.python.org/packages/source/p/pycryptopp/pycryptopp-0.5.17.tar.gz
+  tar -xf pycryptopp-0.5.17.tar.gz
+  cd pycryptopp*
+  python26 setup.py build
+  python26 setup.py test
+  python26 setup.py install
+  cd ..
+
+CentOS specific installation instructions for the `Python APSW module
+<http://code.google.com/p/apsw/>`_, the `Paramiko Python Module
+<http://www.lag.net/paramiko/>`_ and the `XZ Utils
+<http://tukaani.org/xz/>`_ are not yet available. Please refer to the
+instructions for other distributions and post your results to the
+mailing list, so that this documentation can be extended.
+
+Once all the dependencies have been satisfied as described, you can
+continue with :ref:`inst-s3ql`.
+
+Other distributions
+===================
+
+The following is a list of the programs and libraries required by
+S3QL. Generally, you should first check if your distribution already
+provides a suitable packages and only install from source if that is
+not the case.
+
+The programs/libraries are required to run S3QL:
+
+* Kernel version 2.6.26 or newer.
+
+* The **Python development headers** should be available as a
+  package in your distribution. The package is typically called
+  something like `python-dev`, `python-devel` or `python2.6-devel`.
+  To check if this package is installed, try to execute
+  `python-config` (it should print out a brief help message).
+
+* The **extended attribute headers** should be available as a
+  package in your distribution. The package is typically called
+  something like `libattr-dev`, `libattr1-dev`, `libattr-devel` or
+  `libattr1-devel`. To see if this package is installed, check for a
+  file called `xattr.h` in either `/usr/include/attr/` or
+  `/usr/local/include/attr/`.
+
+* The `FUSE Library <http://fuse.sourceforge.net/>`_ should already be
+  installed on your system. However, you have to make sure that you
+  have at least version 2.8 and that you also have the FUSE headers
+  installed (the package is typically called something like
+  `fuse-dev`, `libfuse-dev`, `fuse-devel` or `libfuse-devel`).
+
+  To test if the FUSE library is installed with development headers,
+  run the command `pkg-config --modversion fuse`. It should print a
+  version number.
+
+* The `XZ Utils <http://tukaani.org/xz/>`_ (formerly known as LZMA Utils)
+  are probably available as a package for your system. Make sure that
+  you also install the development headers, which may be in a separate
+  package. The packages are typically called something like `liblzma`
+  and `liblzma-dev` or `libxz` and `libxz-dev`.
+
+  To test if the correct package is installed, run the command
+  `pkg-config --modversion liblzma`. It should print a version number.
+
+* The `GCC-XML compiler <http://www.gccxml.org>`_ compiler may or may
+  not be available as a package. To check if GCC-XML is installed, try
+  to run `gccxml --version`. If you need to install GCC-XML manually,
+  please refer to the instructions for installing under Fedora or the
+  `GCC-XML installation instructions
+  <http://www.gccxml.org/HTML/Install.html>`_.
+
+* The `PyCrypto++ Python Module
+  <http://pypi.python.org/pypi/pycryptopp>`_ may or may not be
+  available as a package. To check if this module is installed, try to
+  execute `python -c 'import pycryptopp'`. To manually install
+  PyCrypto++, download it from the website, extract it and run `python
+  setup.py install --user`.
+
+* The `APSW Python Module <http://code.google.com/p/apsw/>`_ may be
+  available as a package, but most likely the version of the package
+  will not be recent enough. To check which version of APWS is
+  installed, run the command ::
+
+    python -c 'import apsw; print apsw.apswversion(), apsw.sqlitelibversion()'
+
+  If APSW is installed, this should print two version numbers which
+  both have to be at least 3.6.19. To install APSW manually, download
+  it from the website, extract it and run `python setup.py install
+  --user`.
+
+* The `PyLibLZMA Python module
+  <http://pypi.python.org/pypi/pyliblzma>`_ is probably not yet
+  available as a package. It will, however, be automatically
+  downloaded and installed during the S3QL installation if required.
+
+  If you want to check if the module is installed, try to execute
+  `python -c 'import lzma; print lzma.__version__'`. This should print
+  a version number. You need at least version 0.5.3.
+
+* The `unittest2 Python module <http://pypi.python.org/pypi/pyliblzma>`_ is
+  probably not yet available as a package. It will, however, be
+  automatically downloaded and installed during the S3QL installation
+  if required.
+
+  If you want to check if the module is installed, try to execute
+  `python -c 'import unittest2`. The command should succeed without
+  printing anything.
+
+* If you want to use the SFTP backend, then you also need the
+  `Paramiko Python Module <http://www.lag.net/paramiko/>`_. It may or
+  may not be available as a package. To check if this module is
+  installed, try to execute `python -c 'import paramiko'`. To manually
+  install Paramiko, download it from the website, extract it and run
+  `python setup.py install --user`.
+
+Once all the dependencies have been satisfied as described, you can
+continue with :ref:`inst-s3ql`.
+
+.. _inst-s3ql:
+
+Installing S3QL
+===============
+
+To install S3QL itself, proceed as follows:
+
+1. Download S3QL from http://code.google.com/p/s3ql/downloads/list
+2. Unpack it into a folder of your choice
+3. Run `python setup.py build` to build the package
+4. Run `python setup.py test` to run a self-test. If this fails, ask
+   for help on the `mailing list
+   <http://groups.google.com/group/s3ql>`_ or report a bug in the
+   `issue tracker <http://code.google.com/p/s3ql/issues/list>`_.
+
+Now you have three options to complete the installation:
+
+* You can run the S3QL commands from the `bin/` directory. For that,
+  you have to execute `python setup.py build_ext --inplace` first.
+
+* You can install S3QL system-wide for all users. To do that, you
+  have to run `sudo python setup.py install`.
+
+* You can install S3QL into `~/.local` by executing `python
+  setup.py install --user`. In this case you should make sure that
+  `~/.local/bin` is in your `$PATH` environment variable.
