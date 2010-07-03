@@ -1,0 +1,198 @@
+.. -*- mode: rst -*-
+
+==========
+ Mounting
+==========
+
+
+A S3QL file system is mounted with the `mount.s3ql` command. It has
+the following syntax::
+
+  mount.s3ql [options] <storage url> <mountpoint>
+
+Note that S3QL is not a network file system like `NFS
+<http://en.wikipedia.org/wiki/Network_File_System_%28protocol%29>`_ or
+`CIFS <http://en.wikipedia.org/wiki/CIFS>`_, so an S3QL file system
+can only be mounted on one computer at a time.
+
+You can specify the following options:
+
+  --homedir=HOMEDIR     Directory for log files, cache and authentication
+                        info. Default: ~/.s3ql
+  --cachesize=CACHESIZE
+                        Cache size in kb (default: 102400 (100 MB)). Should be
+                        at least 10 times the blocksize of the filesystem,
+                        otherwise an object may be retrieved and written
+                        several times during a single write() or read()
+                        operation.
+  --max-cache-entries=MAX_CACHE_ENTRIES
+                        Maximum number of entries in cache (default: 768). Each
+                        cache entry requires one file descriptor, so if you
+                        increase this number you have to make sure that your
+                        process file descriptor limit (as set with `ulimit
+                        -n`) is high enough (at least the number of cache
+                        entries + 100).
+  --debug=DEBUG         Activate debugging output from specified module. Use
+                        'all' to get debug messages from all modules. This
+                        option can be specified multiple times.
+  --quiet               Be really quiet
+  --allow-other         Normally, only the user who called `mount.s3ql` can
+                        access the mount point. This user then also has full
+                        access to it, independent of individual file
+                        permissions. If the `--allow-other` option is
+                        specified, other users can access the mount point as
+                        well and individual file permissions are taken into
+                        account for all users.
+  --allow-root          Like `--allow_other`, but restrict access to the
+                        mounting user and the root user.
+  --fg                  Do not daemonize, stay in foreground
+  --single              Run in single threaded mode. If you don't understand
+                        this, then you don't need it.
+  --profile             Create profiling information. If you don't understand
+                        this, then you don't need it.
+  --compress=COMPRESS   Compression algorithm to use when storing new data.
+                        Allowed values: LZMA, BZIP2, ZLIB, None. (default:
+                        LZMA)
+  --strip-meta          Strip metadata of all redundancies (like indices)
+                        before uploading. This will significantly reduce the
+                        size of the data at the expense of additional CPU time
+                        during the next unmount and mount.
+
+
+.. _bucket_pw:
+
+Storing Bucket Passwords
+========================
+
+If you are trying to mount an encrypted bucket, `mount.s3ql` will first
+try to read the password from the `.s3ql/authinfo` file (the same file
+that is used to read the backend authentication data) and prompt the
+user to enter the password only if this fails.
+
+The `.authinfo` entries to specify bucket passwords are of the form ::
+
+  storage-url <storage-url> password <password>
+
+So to always use the password `topsecret` when mounting `s3://joes_bucket`,
+the entry would be ::
+
+  storage-url s3://joes_bucket password topsecret
+
+**Note**: if you are using the local backend, the storage url will
+always be converted to an absolute path. So if you are in the
+`/home/john` directory and try to mount `local://bucket`, the matching
+`.authinfo` entry has to have a storage url of
+`local:///home/john/bucket`.
+
+
+Compression Algorithms
+======================
+
+S3QL supports three compression algorithms, LZMA, Bzip2 and zlib (with
+LZMA being the default). The compression algorithm can be specified
+freely whenever the file system is mounted, since it affects only the
+compression of new data blocks.
+
+Roughly speaking, LZMA is slower but achieves better compression
+ratios than Bzip2, while Bzip2 in turn is slower but achieves better
+compression ratios than zlib.
+
+For maximum file system performance, the best algorithm therefore
+depends on your network connection speed: the compression algorithm
+should be fast enough to saturate your network connection.
+
+To find the optimal algorithm for your system, S3QL ships with a
+program called `benchmark.py` in the `contrib` directory. You should
+run this program on a file that has a size that is roughly equal to
+the block size of your file system and has similar contents. It will
+then determine the compression speeds for the different algorithms and
+the upload speeds for the specified backend and recommend the best
+algorithm that is fast enough to saturate your network connection.
+
+Obviously you should make sure that there is little other system load
+when you run `benchmark.py` (i.e., don't compile software or encode
+videos at the same time).
+
+
+Notes about Caching
+===================
+
+S3QL maintains a local cache of the file system data to speed up
+access. The cache is block based, so it is possible that only parts of
+a file are in the cache.
+
+Maximum Number of Cache Entries
+-------------------------------
+
+The maximum size of the cache can be configured with the `--cachesize`
+option. In addition to that, the maximum number of objects in the
+cache is limited by the `--max-cache-entries` option, so it is
+possible that the cache does not grow up to the maximum cache size
+because the maximum number of cache elements has been reached. The
+reason for this limit is that each cache entries requires one open
+file descriptor, and Linux distributions usually limit the total
+number of file descriptors per process to about a thousand.
+
+If you specify a value for `--max-cache-entries`, you should therefore
+make sure to also configure your system to increase the maximum number
+of open file handles. This can be done temporarily with the `umask -n`
+command. The method to permanently change this limit system-wide
+depends on your distribution.
+
+
+
+Cache Flushing and Expiration
+-----------------------------
+
+S3QL flushes changed blocks in the cache to the backend whenever a block
+has not been accessed for at least 10 seconds. Note that when a block is
+flushed, it still remains in the cache.
+
+Cache expiration (i.e., removal of blocks from the cache) is only done
+when the maximum cache size is reached. S3QL always expires the least
+recently used blocks first.
+
+
+Automatic Mounting
+==================
+
+If you want to mount and umount an S3QL file system automatically at
+system startup and shutdown, you have two options. You can either add
+it to `/etc/fstab` like any other file system, or you can create
+a dedicated init script.
+
+The first option is simpler, but not recommended. Since file systems
+mounted in `/etc/fstab` will always be unmounted with the `umount`
+command, the call will *not* block until all data has been uploaded
+(this is a FUSE limitation, see `issue 159
+<http://code.google.com/p/s3ql/issues/detail?id=159>`_) and your
+system will shut down (or restart) before the upload is complete. If
+for some reason you want to do this nevertheless, you have to copy the
+`mount.s3ql` program to `/sbin` and use the `_netdev`
+mount option, e.g. ::
+
+  s3://my_s3ql_bucket     /mnt/s3     s3ql    allow-other,_netdev  0  0
+
+
+The better option is to use a dedicated init script that mounts and
+umounts the file system using the `mount.s3ql` and `umount.s3ql`
+commands. The correct place and format for this script depends on your
+distribution, usual locations are `/etc/init.d/` and `/etc/init/`.
+
+
+
+Long-term Mounting
+==================
+
+If you intend to keep an S3QL file system mounted for long periods of
+time, you should make sure that the file system is unmounted and
+remounted every once in a while. S3QL flushes the file system metadata
+only when the file system is unmounted, so if you had an S3QL file
+system mounted for several days and then your harddisk crashes (so
+that `fsck.s3ql` cannot recover the local metadata), you will loose
+all the changes that you have made since the last successful unmount.
+Your data will still be stored on the backend, but without the
+metadata it will not be linked to any directory entries.
+
+This limitation will hopefully be removed in the future (see `issue
+132 <http://code.google.com/p/s3ql/issues/detail?id=132>`_).

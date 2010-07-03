@@ -1,0 +1,92 @@
+.. -*- mode: rst -*-
+
+=====================
+ Other S3QL Commands
+=====================
+
+Getting file system statistics
+==============================
+
+You can get more information about a mounted S3QL file system with the
+`stat.s3ql` command. It has the following syntax::
+
+  stat.s3ql <mountpoint>
+
+
+Probably the most interesting numbers are the total size of your data,
+the total size after duplication, and the final size after
+de-duplication and compression.
+
+`stat.s3ql` also has some additional options. Run `stat.s3ql --help`
+for a complete list.
+
+`stat.s3ql` can only be called by the user that mounted the file
+system (even if it was mounted with `--allow-other` or
+`--allow-root`). This limitation will hopefully be removed in the
+future (see `issue 155 <http://code.google.com/p/s3ql/issues/detail?id=155>`_).
+
+Changing the Passphrase
+=======================
+
+To change the passphrase a bucket, use the `tune.s3ql` command::
+
+  tune.s3ql --change-passphrase  <storage url>
+
+The passphrase can only be changed when the bucket is not mounted.
+
+Checking for Errors
+===================
+
+If, for some reason, the filesystem has not been correctly unmounted,
+or if you suspect that there might be errors, you should run the
+`fsck.s3ql` utility. It has the following syntax::
+
+ fsck.s3ql [options] <storage url>
+
+Possible options are:
+
+  --homedir=HOMEDIR  Directory for log files, cache and authentication info.
+                     Default: `~/.s3ql`
+  --debug=DEBUG      Activate debugging output from specified module. Use
+                     `all` to get debug messages from all modules.
+                     This option can be specified multiple times.
+  --quiet            Be really quiet
+  --batch            If user input is required, exit without prompting.
+  --force            Force checking even if file system is marked clean.
+
+
+Upgrading the file system
+=========================
+
+If you have installed a new version of S3QL, is usually necessary to
+upgrade your file system metadata. Note that afterwards the file system
+can no longer be accessed with older versions of S3QL.
+
+Before you upgrade the file system, you should run `fsck.s3ql` (from
+the S3QL release that you are upgrading from).
+
+During the upgrade you have to make very sure that the command is not
+interrupted, and that no one else tries to mount, fsck or upgrade the
+file system at the same time.
+
+Finally, note that `tune.s3ql` can only upgrade from the *previous*
+S3QL release, so you cannot directly upgrade e.g. from version 0.10 to
+version 0.12. You first have to download S3QL 0.11 and upgrade the
+file system from 0.10 to 0.11 before you can install S3QL 0.12 and
+upgrade the file system from 0.11 to 0.12.
+
+To upgrade a file system from the previous to the current revision,
+execute ::
+
+  tune.s3ql --upgrade <storage url>
+
+
+
+Deleting a file system
+======================
+
+A file system can be deleted with::
+
+  tune.s3ql --delete <storage url>
+
+This physically deletes all the data and file system structures.
