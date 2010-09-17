@@ -385,16 +385,16 @@ def main(single=False):
 
     if single:
         log.debug('Calling fuse_session_loop')
-        if libfuse.fuse_session_loop(session) != 0:
-            raise RuntimeError("fuse_session_loop() failed")
+        # We need to unlock even in single threaded mode, because the
+        # Operations methods will always try to acquire the lock
+        with lock.unlocked():
+            if libfuse.fuse_session_loop(session) != 0:
+                raise RuntimeError("fuse_session_loop() failed")
     else:
         log.debug('Calling fuse_session_loop_mt')
-        lock.release()
-        try:
+        with lock.unlocked():
             if libfuse.fuse_session_loop_mt(session) != 0:
                 raise RuntimeError("fuse_session_loop_mt() failed")
-        finally:
-            lock.acquire()
 
 def close():
     '''Unmount file system and clean up'''
@@ -448,8 +448,9 @@ def fuse_init(userdata_p, conn_info_p):
 def fuse_destroy(userdata_p):
     '''Cleanup Operations'''
     log.debug('destroy(): start')
-    with lock:
-        operations.destroy()
+    # Called by fuse_session_destroy(), so we already hold the
+    # global lock
+    operations.destroy()
     log.debug('destroy(): end')
 
 def fuse_getattr(req, ino, _unused):

@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from .multi_lock import MultiLock
 from .backends.common import NoSuchObject
 from .ordered_dict import OrderedDict
-from .common import EmbeddedException, without, ExceptionStoringThread
+from .common import EmbeddedException, ExceptionStoringThread
 from .thread_group import ThreadGroup
 from .upload_manager import UploadManager, RemoveThread, retry_exc
 from .database import NoSuchRowError
@@ -231,7 +231,7 @@ class BlockCache(object):
                 else:
                     log.debug('get(inode=%d, block=%d): downloading block', inode, blockno)
                     el = CacheEntry(inode, blockno, obj_id, filename, "w+b")
-                    with without(lock):
+                    with lock.unlocked():
                         try:
                             if self.bucket.read_after_create_consistent():
                                 self.bucket.fetch_fh('s3ql_data_%d' % obj_id, el)
@@ -424,20 +424,47 @@ class BlockCache(object):
     def commit(self):
         """Upload all dirty blocks
         
-        When the method returns, all blocks have been registered
-        in the database, but the actual uploads may still be 
-        in progress.
+        This method uploads all dirty blocks. The object itself may
+        still be in transit when the method returns, but the
+        blocks table is guaranteed to refer to the correct objects.
         
         This method releases the global lock.
         """
     
+        in_transit = list()
+        
         for el in self.cache.itervalues():
             if not el.dirty:
                 continue
             
-            self.upload_manager.add(el) # Releases global lock
+            if (el.inode, el.blockno) in self.upload_manager.in_transit:
+                if not el.modified_after_upload:
+                    continue
+                
+                # We need to wait for the current upload to complete
+                in_transit.append(el)
+            else:
+                self.upload_manager.add(el) # Releases global lock
     
-        
+        while in_transit:
+            log.debug('commit(): in_transit: %s', in_transit)
+            self.upload_manager.join_one()
+            finished = [ x for x in in_transit 
+                        if x not in self.upload_manager.in_transit ]
+            in_transit = [ x for x in in_transit 
+                           if x in self.upload_manager.in_transit ]            
+            for el in finished:
+                # Object may no longer be dirty or already in transit
+                # if a different thread initiated the object while
+                # the global lock was released in a previous iteration.
+                if el.dirty:
+                    continue
+                if  (el.inode, el.blockno) in self.upload_manager.in_transit:
+                    continue
+                
+                self.upload_manager.add(el) # Releases global lock
+                
+                        
     def clear(self):
         """Upload all dirty data and clear cache
         
