@@ -1,0 +1,29 @@
+#!/usr/bin/make -f
+# -*- makefile -*-
+
+#export DH_VERBOSE=1
+
+%:
+	dh $@
+
+override_dh_installchangelogs:
+	dh_installchangelogs Changes.txt
+
+override_dh_compress:
+	dh_compress -X.txt -X.js -X.py
+
+# Fakeroot breaks testing
+#override_dh_install:
+#	python setup.py test
+#	dh_install
+
+override_dh_installdocs:
+	python2.6 setup.py build_sphinx
+	dh_installdocs
+
+override_dh_auto_clean:
+	dh_auto_clean
+	rm -rf dist
+	rm -rf doc/html
+	rm -rf doc/doctrees
+	rm -rf setup.log
