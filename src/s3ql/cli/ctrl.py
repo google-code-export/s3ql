@@ -44,13 +44,34 @@ def parse_args(args):
     subparsers.add_parser('flushcache', help='flush file system cache',
                           parents=[pparser])
 
-    sparser = subparsers.add_parser('cachesize', help='Print stack trace',
-                                    parents=[pparser])
+    sparser = subparsers.add_parser('cachesize', help='Change cache size',
+                                    parents=[pparser])          
     sparser.add_argument('cachesize', metavar='<size>', type=int,
                          help='New cache size in KB')
+    
+    sparser = subparsers.add_parser('log', help='Change log level',
+                                    parents=[pparser])
+
+    sparser.add_argument('level', choices=('debug', 'info', 'warn'),
+                         metavar='<level>', 
+                         help='Desired new log level for mount.s3ql process. '
+                              'Allowed values: %(choices)s')
+    sparser.add_argument('modules', nargs='*', metavar='<module>', 
+                         help='Modules to enable debugging output for. Specify '
+                              '`all` to enable debugging for all modules.')
                 
     options = parser.parse_args(args)
     
+    if options.level != 'debug' and options.modules:
+        parser.error('Modules can only be specified with `debug` logging level.')
+    if not options.modules:
+        options.modules = [ 'all' ]
+    
+    if options.level:
+        # Protected member ok, hopefully this won't break
+        #pylint: disable=W0212
+        options.level = logging._levelNames[options.level.upper()]
+                             
     return options
 
     
@@ -78,8 +99,15 @@ def main(args=None):
     
     if options.action == 'flushcache':
         libc.setxattr(ctrlfile, 's3ql_flushcache!', 'dummy')
+
+    elif options.action == 'log':
+        libc.setxattr(ctrlfile, 'logging', 
+                      pickle.dumps((options.level, options.modules),
+                                   pickle.HIGHEST_PROTOCOL))
+
     elif options.action == 'cachesize':
         libc.setxattr(ctrlfile, 'cachesize', pickle.dumps(options.cachesize*1024))    
+
         
 
 if __name__ == '__main__':

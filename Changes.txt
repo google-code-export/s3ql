@@ -7,6 +7,8 @@ xxx, S3QL 0.24
     blocks as dirty and resulted in unneccessary checksum
     calculations on expiration.
 
+  * s3qlctrl can now change the log level at runtime.
+  
 2010-09-03, S3QL 0.23
 
   * Fixed problem with global_lock.py not being installed by
