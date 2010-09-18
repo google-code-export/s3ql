@@ -15,7 +15,7 @@ import llfuse
 import collections
 import logging
 from .inode_cache import InodeCache, OutOfInodesError
-from .common import (get_path, CTRL_NAME, CTRL_INODE, 
+from .common import (get_path, CTRL_NAME, CTRL_INODE, LoggerFilter,
                      EmbeddedException, ExceptionStoringThread)
 import time
 from .block_cache import BlockCache
@@ -221,6 +221,8 @@ class Operations(llfuse.Operations):
                 self.lock_tree(*pickle.loads(value))  
             elif name == 'rmtree':
                 self.remove_tree(*pickle.loads(value))
+            elif name == 'logging':
+                update_logging(*pickle.loads(value))
             elif name == 'cachesize':
                 self.cache.max_size = pickle.loads(value)      
             else:
@@ -956,7 +958,23 @@ class Operations(llfuse.Operations):
         if not datasync:
             self.inodes.flush_id(fh)
 
-
+def update_logging(level, modules):           
+    root_logger = logging.getLogger()
+    if level == logging.DEBUG:
+        logging.disable(logging.NOTSET)
+        for handler in root_logger.handlers:
+            for filter_ in [ f for f in handler.filters if isinstance(f, LoggerFilter) ]:
+                handler.removeFilter(filter_)
+            handler.setLevel(level)
+        if 'all' not in modules:  
+            for handler in root_logger.handlers:
+                handler.addFilter(LoggerFilter(modules, logging.INFO))
+                        
+    else: 
+        logging.disable(logging.DEBUG)
+    root_logger.setLevel(level)    
+    
+    
 class InodeFlushThread(ExceptionStoringThread):
     '''
     Periodically commit dirty inodes.
@@ -979,7 +997,6 @@ class InodeFlushThread(ExceptionStoringThread):
             with lock:
                 self.cache.flush()
             self.stop_event.wait(5)
-        
         log.debug('FlushThread: end')    
         
     def stop(self):
@@ -994,6 +1011,4 @@ class InodeFlushThread(ExceptionStoringThread):
             self.join_and_raise()
         finally:
             lock.acquire()
-            
-        
-        
+
