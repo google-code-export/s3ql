@@ -10,9 +10,11 @@ from __future__ import division, print_function, absolute_import
 
 import logging
 from s3ql.common import (get_backend, QuietError, unlock_bucket,
-                         cycle_metadata, dump_metadata, restore_metadata,
+                         restore_metadata,
+                         cycle_metadata, dump_metadata, create_tables,
                          setup_logging, get_bucket_cachedir)
 from s3ql.backends import s3
+from s3ql.backends.local import Bucket as LocalBucket
 from s3ql.parse_args import ArgumentParser
 from s3ql import CURRENT_FS_REV
 from getpass import getpass
@@ -214,7 +216,7 @@ def upgrade(bucket):
     # Access to protected member
     #pylint: disable=W0212
     log.info('Getting file system parameters..')
-    seq_nos = [ int(x[len('s3ql_seq_no_'):]) for x in bucket.list('s3ql_seq_no_') ]
+    seq_nos = list(bucket.list('s3ql_seq_no_')) 
     if not seq_nos:
         raise QuietError(textwrap.dedent(''' 
             File system revision too old to upgrade!
@@ -223,8 +225,14 @@ def upgrade(bucket):
             revision before you can use this version to upgrade to the newest
             revision.
             '''))                     
+    elif (isinstance(bucket, LocalBucket) and
+         (seq_nos[0].endswith('.meta') or seq_nos[0].endswith('.dat'))):
+        param = bucket.lookup('s3ql_metadata.meta')
+        seq_nos = [ int(x[len('s3ql_seq_no_'):-4]) for x in seq_nos if x.endswith('.dat') ]                 
+    else:
+        param = bucket.lookup('s3ql_metadata')
+        seq_nos = [ int(x[len('s3ql_seq_no_'):]) for x in seq_nos ]
     seq_no = max(seq_nos)
-    param = bucket.lookup('s3ql_metadata')
 
     # Check for unclean shutdown
     if param['seq_no'] < seq_no:
@@ -277,6 +285,25 @@ def upgrade(bucket):
     if sys.stdin.readline().strip().lower() != 'yes':
         raise QuietError()
 
+    log.info('Upgrading from revision %d to %d...', CURRENT_FS_REV - 1,
+             CURRENT_FS_REV)
+    param['revision'] = CURRENT_FS_REV
+    
+    if isinstance(bucket, LocalBucket):
+        for (path, _, filenames) in os.walk(bucket.name, topdown=True):
+            for name in filenames:
+                if name.endswith('.dat'):
+                    continue
+                 
+                basename = os.path.splitext(name)[0]
+                os.rename(os.path.join(path, name),
+                          os.path.join(path, basename))
+                with open(os.path.join(path, basename), 'r+b') as dst:
+                    dst.seek(0, os.SEEK_END)
+                    with open(os.path.join(path, basename + '.dat'), 'rb') as src:
+                        shutil.copyfileobj(src, dst)
+                os.unlink(os.path.join(path, basename + '.dat'))
+                     
     # Download metadata
     log.info("Downloading & uncompressing metadata...")
     dbfile = tempfile.NamedTemporaryFile()
@@ -285,17 +312,8 @@ def upgrade(bucket):
     bucket.fetch_fh("s3ql_metadata", fh)
     fh.seek(0)
     log.info('Reading metadata...')
-    restore_metadata(fh, db)
+    restore_legacy_metadata(fh, db)
     fh.close()
-    
-    log.info('Upgrading from revision %d to %d...', CURRENT_FS_REV - 1,
-             CURRENT_FS_REV)
-    param['revision'] = CURRENT_FS_REV
-    
-    for (id_, mode, target) in db.query('SELECT id, mode, target FROM inodes'):
-        if stat.S_ISLNK(mode):
-            db.execute('UPDATE inodes SET size=? WHERE id=?',
-                       (len(target), id_))
     
     # Increase metadata sequence no
     param['seq_no'] += 1
@@ -314,6 +332,137 @@ def upgrade(bucket):
     bucket.store_fh("s3ql_metadata", fh, param)
     fh.close()
 
+def restore_legacy_metadata(ifh, conn):
+    unpickler = pickle.Unpickler(ifh)
+    (data_start, to_dump, sizes, columns) = unpickler.load()
+    ifh.seek(data_start)
+    create_tables(conn)
+    create_legacy_tables(conn)
+    for (table, _) in to_dump:
+        log.info('Loading %s', table)
+        col_str = ', '.join(columns[table])
+        val_str = ', '.join('?' for _ in columns[table])
+        if table in ('inodes', 'blocks', 'objects', 'contents'):
+            sql_str = 'INSERT INTO leg_%s (%s) VALUES(%s)' % (table, col_str, val_str)
+        else:
+            sql_str = 'INSERT INTO %s (%s) VALUES(%s)' % (table, col_str, val_str)
+        for _ in xrange(sizes[table]):
+            buf = unpickler.load()
+            for row in buf:
+                conn.execute(sql_str, row)
 
+    # Create a block for each object
+    conn.execute('''
+         INSERT INTO blocks (id, hash, refcount, obj_id, size)
+            SELECT id, hash, refcount, id, size FROM leg_objects
+    ''')
+    conn.execute('''
+         INSERT INTO objects (id, refcount, compr_size)
+            SELECT id, 1, compr_size FROM leg_objects
+    ''')
+    conn.execute('DROP TABLE leg_objects')
+              
+    # Create new inode_blocks table for inodes with multiple blocks
+    conn.execute('''
+         CREATE TEMP TABLE multi_block_inodes AS 
+            SELECT inode FROM leg_blocks
+            GROUP BY inode HAVING COUNT(inode) > 1
+    ''')    
+    conn.execute('''
+         INSERT INTO inode_blocks (inode, blockno, block_id)
+            SELECT inode, blockno, obj_id 
+            FROM leg_blocks JOIN multi_block_inodes USING(inode)
+    ''')
+    
+    # Create new inodes table for inodes with multiple blocks
+    conn.execute('''
+        INSERT INTO inodes (id, uid, gid, mode, mtime, atime, ctime, 
+                            refcount, size, rdev, locked, block_id)
+               SELECT id, uid, gid, mode, mtime, atime, ctime, 
+                      refcount, size, rdev, locked, NULL
+               FROM leg_inodes JOIN multi_block_inodes ON inode == id 
+            ''')
+    
+    # Add inodes with just one block or no block
+    conn.execute('''
+        INSERT INTO inodes (id, uid, gid, mode, mtime, atime, ctime, 
+                            refcount, size, rdev, locked, block_id)
+               SELECT id, uid, gid, mode, mtime, atime, ctime, 
+                      refcount, size, rdev, locked, obj_id
+               FROM leg_inodes LEFT JOIN leg_blocks ON leg_inodes.id == leg_blocks.inode 
+               GROUP BY leg_inodes.id HAVING COUNT(leg_inodes.id) <= 1  
+            ''')
+    
+    conn.execute('''
+        INSERT INTO symlink_targets (inode, target)
+        SELECT id, target FROM leg_inodes WHERE target IS NOT NULL
+    ''')
+    
+    conn.execute('DROP TABLE leg_inodes')
+    conn.execute('DROP TABLE leg_blocks')
+    
+    # Sort out names
+    conn.execute('''
+        INSERT INTO names (name, refcount) 
+        SELECT name, COUNT(name) FROM leg_contents GROUP BY name
+    ''')
+    conn.execute('''
+        INSERT INTO contents (name_id, inode, parent_inode) 
+        SELECT names.id, inode, parent_inode 
+        FROM leg_contents JOIN names ON leg_contents.name == names.name
+    ''')
+    conn.execute('DROP TABLE leg_contents')
+    
+    conn.execute('ANALYZE')
+    
+def create_legacy_tables(conn):
+    conn.execute("""
+    CREATE TABLE leg_inodes (
+        id        INTEGER PRIMARY KEY,
+        uid       INT NOT NULL,
+        gid       INT NOT NULL,
+        mode      INT NOT NULL,
+        mtime     REAL NOT NULL,
+        atime     REAL NOT NULL,
+        ctime     REAL NOT NULL,
+        refcount  INT NOT NULL,
+        target    BLOB(256) ,
+        size      INT NOT NULL DEFAULT 0,
+        rdev      INT NOT NULL DEFAULT 0,
+        locked    BOOLEAN NOT NULL DEFAULT 0
+    )
+    """)    
+    conn.execute("""
+    CREATE TABLE leg_objects (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        refcount  INT NOT NULL,
+        hash      BLOB(16) UNIQUE,
+        size      INT NOT NULL,
+        compr_size INT                  
+    )""")
+    conn.execute("""
+    CREATE TABLE leg_blocks (
+        inode     INTEGER NOT NULL REFERENCES leg_inodes(id),
+        blockno   INT NOT NULL,
+        obj_id    INTEGER NOT NULL REFERENCES leg_objects(id),
+        PRIMARY KEY (inode, blockno)
+    )""")
+    conn.execute("""
+    CREATE TABLE leg_contents (
+        rowid     INTEGER PRIMARY KEY AUTOINCREMENT,
+        name      BLOB(256) NOT NULL,
+        inode     INT NOT NULL REFERENCES leg_inodes(id),
+        parent_inode INT NOT NULL REFERENCES leg_inodes(id),
+        
+        UNIQUE (name, parent_inode)
+    )""")
+        
+def create_legacy_indices(conn):
+    conn.execute('CREATE INDEX ix_leg_contents_parent_inode ON contents(parent_inode)')
+    conn.execute('CREATE INDEX ix_leg_contents_inode ON contents(inode)')
+    conn.execute('CREATE INDEX ix_leg_objects_hash ON objects(hash)')
+    conn.execute('CREATE INDEX ix_leg_blocks_obj_id ON blocks(obj_id)')
+    conn.execute('CREATE INDEX ix_leg_blocks_inode ON blocks(inode)')
+        
 if __name__ == '__main__':
     main(sys.argv[1:])
