@@ -1,4 +1,7 @@
-xxx, S3QL HEAD
+unreleased, S3QL HEAD(unstable)
+
+  * Restructured metadata. This should also significantly reduce the
+    size of the SQLite database file.
 
   * Fixed license typo in file header comments, license
     is GNU GPL Version 3, not LGPL.
@@ -14,7 +17,6 @@ xxx, S3QL HEAD
   * Disabled WAL mode again for now because of unexpected problems
     with s3qlcp, s3qllock and s3qlrm (performance going down orders
     of magnitude, and *very* large *.db-wal file in ~/.s3ql).
-    
 
 2011-05-13, S3QL 1.0
 
