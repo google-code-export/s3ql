@@ -90,7 +90,7 @@ class Operations(llfuse.Operations):
         self.encountered_errors = True
 
 
-    def __init__(self, bucket, db, cachedir, blocksize, cache_size,
+    def __init__(self, bucket_pool, db, cachedir, blocksize, cache_size,
                  cache_entries=768, upload_event=None):
         super(Operations, self).__init__()
 
@@ -101,7 +101,7 @@ class Operations(llfuse.Operations):
         self.inode_flush_thread = None
         self.open_inodes = collections.defaultdict(lambda: 0)
         self.blocksize = blocksize
-        self.cache = BlockCache(bucket, db, cachedir, cache_size, cache_entries)
+        self.cache = BlockCache(bucket_pool, db, cachedir, cache_size, cache_entries)
 
     def init(self):
         self.cache.init()
@@ -141,7 +141,7 @@ class Operations(llfuse.Operations):
             return self.inodes[id_]
 
         try:
-            id_ = self.db.get_val("SELECT inode FROM contents WHERE name=? AND parent_inode=?",
+            id_ = self.db.get_val("SELECT inode FROM contents_v WHERE name=? AND parent_inode=?",
                                   (name, id_p))
         except NoSuchRowError:
             raise(llfuse.FUSEError(errno.ENOENT))
@@ -168,7 +168,11 @@ class Operations(llfuse.Operations):
         inode = self.inodes[id_]
         if inode.atime < inode.ctime or inode.atime < inode.mtime:
             inode.atime = timestamp 
-        return inode.target
+        try:
+            return self.db.get_val("SELECT target FROM symlink_targets WHERE inode=?", (id_,))
+        except NoSuchRowError:
+            log.warn('Inode does not have symlink target: %d', id_)
+            raise FUSEError(errno.EINVAL)
 
     def opendir(self, id_):
         return id_
@@ -190,8 +194,8 @@ class Operations(llfuse.Operations):
 
         # The ResultSet is automatically deleted
         # when yield raises GeneratorExit.  
-        res = self.db.query("SELECT rowid, name, inode FROM contents WHERE parent_inode=? "
-                            'AND rowid > ? ORDER BY rowid', (id_, off))
+        res = self.db.query("SELECT rowid, name, inode FROM contents_v "
+                            'WHERE parent_inode=? AND contents_v.rowid > ? ORDER BY rowid', (id_, off))
         for (next_, name, cid_) in res:
             yield (name, self.inodes[cid_], next_)
 
@@ -317,17 +321,17 @@ class Operations(llfuse.Operations):
         while True:
             found_subdirs = False
             id_p = queue.pop()  
-            for (name, id_) in self.db.query('SELECT name, inode FROM contents WHERE '
-                                             'parent_inode=?', (id_p,)):
+            for (name_id, id_) in self.db.query('SELECT name_id, inode FROM contents WHERE '
+                                                'parent_inode=?', (id_p,)):
                    
-                if self.db.has_val('SELECT 1 FROM contents WHERE parent_inode=?', 
-                                   (id_,)):
+                if self.db.has_val('SELECT 1 FROM contents WHERE parent_inode=?', (id_,)):
                     if not found_subdirs:
                         found_subdirs = True
                         queue.append(id_p)
                     queue.append(id_)
                     
                 else:
+                    name = self.db.get_val("SELECT name FROM names WHERE id=?", (name_id,))
                     llfuse.invalidate_entry(id_p, name)
                     self._remove(id_p, name, id_, force=True)
                 
@@ -389,9 +393,9 @@ class Operations(llfuse.Operations):
             (src_id, target_id, rowid) = queue.pop()
             log.debug('copy_tree(%d, %d): Processing directory (%d, %d, %d)', 
                       src_inode.id, target_inode.id, src_id, target_id, rowid)
-            for (name, id_, rowid) in db.query('SELECT name, inode, rowid FROM contents '
-                                               'WHERE parent_inode=? AND rowid > ? '
-                                               'ORDER BY rowid', (src_id, rowid)):
+            for (name_id, id_, rowid) in db.query('SELECT name_id, inode, rowid FROM contents '
+                                                  'WHERE parent_inode=? AND rowid > ? '
+                                                  'ORDER BY rowid', (src_id, rowid)):
 
                 if id_ not in id_cache:
                     inode = self.inodes[id_]
@@ -400,8 +404,7 @@ class Operations(llfuse.Operations):
                         inode_new = make_inode(refcount=1, mode=inode.mode, size=inode.size,
                                                uid=inode.uid, gid=inode.gid,
                                                mtime=inode.mtime, atime=inode.atime,
-                                               ctime=inode.ctime, target=inode.target,
-                                               rdev=inode.rdev)
+                                               ctime=inode.ctime, rdev=inode.rdev)
                     except OutOfInodesError:
                         log.warn('Could not find a free inode')
                         raise FUSEError(errno.ENOSPC)
@@ -411,12 +414,22 @@ class Operations(llfuse.Operations):
                     if inode.refcount != 1:
                         id_cache[id_] = id_new
     
-                    for (obj_id, blockno) in db.query('SELECT obj_id, blockno FROM blocks '
-                                                      'WHERE inode=?', (id_,)):
+                    db.execute('INSERT INTO symlink_targets (inode, target) '
+                               'SELECT ?, target FROM symlink_targets WHERE inode=?',
+                               (id_new, id_))
+                    
+                    # TODO: This entire loop should be replaced by two SQL statements.
+                    # But how do we handle the blockno==0 case and the in_transit check?
+                    for (block_id, blockno) in db.query('SELECT block_id, blockno FROM inode_blocks '
+                                                        'WHERE inode=? UNION SELECT block_id, 0 FROM inodes '
+                                                        'WHERE id=?', (id_, id_)):
                         processed += 1
-                        db.execute('INSERT INTO blocks (inode, blockno, obj_id) VALUES(?, ?, ?)',
-                                   (id_new, blockno, obj_id))
-                        db.execute('UPDATE objects SET refcount=refcount+1 WHERE id=?', (obj_id,))
+                        if blockno == 0:
+                            db.execute('UPDATE inodes SET block_id=? WHERE id=?', (block_id, id_new))
+                        else:
+                            db.execute('INSERT INTO inode_blocks (inode, blockno, block_id) VALUES(?,?,?)',
+                                       (id_new, blockno, block_id))
+                        db.execute('UPDATE blocks SET refcount=refcount+1 WHERE id=?', (block_id,))
                         
                         if (id_, blockno) in self.cache.upload_manager.in_transit:
                             in_transit.add((id_, blockno))
@@ -427,8 +440,9 @@ class Operations(llfuse.Operations):
                     id_new = id_cache[id_]
                     self.inodes[id_new].refcount += 1
     
-                db.execute('INSERT INTO contents (name, inode, parent_inode) VALUES(?, ?, ?)',
-                           (name, id_new, target_id))
+                db.execute('INSERT INTO contents (name_id, inode, parent_inode) VALUES(?, ?, ?)',
+                           (name_id, id_new, target_id))
+                db.execute('UPDATE names SET refcount=refcount+1 WHERE id=?', (name_id,))
                 
                 processed += 1
                 
@@ -509,8 +523,10 @@ class Operations(llfuse.Operations):
         if self.inodes[id_p].locked and not force:
             raise FUSEError(errno.EPERM)
         
-        self.db.execute("DELETE FROM contents WHERE name=? AND parent_inode=?",
-                        (name, id_p))
+        name_id = self._del_name(name)
+        self.db.execute("DELETE FROM contents WHERE name_id=? AND parent_inode=?",
+                        (name_id, id_p))
+        
         inode = self.inodes[id_]
         inode.refcount -= 1
         inode.ctime = timestamp
@@ -524,6 +540,7 @@ class Operations(llfuse.Operations):
             # Since the inode is not open, it's not possible that new blocks
             # get created at this point and we can safely delete the inode
             self.db.execute('DELETE FROM ext_attributes WHERE inode=?', (id_,))
+            self.db.execute('DELETE FROM symlink_targets WHERE inode=?', (id_,))
             del self.inodes[id_]
 
     def symlink(self, id_p, name, target, ctx):
@@ -536,7 +553,11 @@ class Operations(llfuse.Operations):
         # with this size. If the kernel ever learns to open and read
         # symlinks directly, it will read the corresponding number of \0
         # bytes.
-        return self._create(id_p, name, mode, ctx, target=target, size=len(target))
+        inode = self._create(id_p, name, mode, ctx, size=len(target))
+        self.db.execute('INSERT INTO symlink_targets (inode, target) VALUES(?,?)',
+                        (inode.id, target))
+        
+        return inode
 
     def rename(self, id_p_old, name_old, id_p_new, name_new):
         if name_new == CTRL_NAME or name_old == CTRL_NAME:
@@ -569,12 +590,46 @@ class Operations(llfuse.Operations):
             self._rename(id_p_old, name_old, id_p_new, name_new)
 
 
+    def _add_name(self, name):
+        '''Get id for *name* and increase refcount
+        
+        Name is inserted in table if it does not yet exist.
+        '''
+        
+        try:
+            name_id = self.db.get_val('SELECT id FROM names WHERE name=?', (name,))
+        except NoSuchRowError:
+            name_id = self.db.rowid('INSERT INTO names (name, refcount) VALUES(?,?)',
+                                    (name, 1))
+        else:
+            self.db.execute('UPDATE names SET refcount=refcount+1 WHERE id=?', (name_id,))
+        return name_id
+            
+    def _del_name(self, name):
+        '''Decrease refcount for *name*
+        
+        Name is removed from table if refcount drops to zero. Returns the
+        (possibly former) id of the name.
+        '''
+        
+        (name_id, refcount) = self.db.get_row('SELECT id, refcount FROM names WHERE name=?', (name,))
+        
+        if refcount > 1:
+            self.db.execute('UPDATE names SET refcount=refcount-1 WHERE id=?', (name_id,))
+        else:
+            self.db.execute('DELETE FROM names WHERE id=?', (name_id,))
+            
+        return name_id
+                   
     def _rename(self, id_p_old, name_old, id_p_new, name_new):
         timestamp = time.time()
 
-        self.db.execute("UPDATE contents SET name=?, parent_inode=? WHERE name=? "
-                     "AND parent_inode=?", (name_new, id_p_new,
-                                            name_old, id_p_old))
+        name_id_new = self._add_name(name_new)
+        name_id_old = self._del_name(name_old)
+        
+        self.db.execute("UPDATE contents SET name_id=?, parent_inode=? WHERE name_id=? "
+                        "AND parent_inode=?", (name_id_new, id_p_new,
+                                               name_id_old, id_p_old))
 
         inode_p_old = self.inodes[id_p_old]
         inode_p_new = self.inodes[id_p_new]
@@ -594,13 +649,15 @@ class Operations(llfuse.Operations):
             raise llfuse.FUSEError(errno.EINVAL)
 
         # Replace target
-        self.db.execute("UPDATE contents SET inode=? WHERE name=? AND parent_inode=?",
-                    (id_old, name_new, id_p_new))
+        name_id_new = self.db.get_val('SELECT id FROM names WHERE name=?', (name_new,))      
+        self.db.execute("UPDATE contents SET inode=? WHERE name_id=? AND parent_inode=?",
+                        (id_old, name_id_new, id_p_new))
         
 
         # Delete old name
-        self.db.execute('DELETE FROM contents WHERE name=? AND parent_inode=?',
-                    (name_old, id_p_old))
+        name_id_old = self._del_name(name_old)          
+        self.db.execute('DELETE FROM contents WHERE name_id=? AND parent_inode=?',
+                        (name_id_old, id_p_old))
 
         inode_new = self.inodes[id_new]
         inode_new.refcount -= 1
@@ -620,6 +677,7 @@ class Operations(llfuse.Operations):
             # Since the inode is not open, it's not possible that new blocks
             # get created at this point and we can safely delete the inode
             self.db.execute('DELETE FROM ext_attributes WHERE inode=?', (id_new,))
+            self.db.execute('DELETE FROM symlink_targets WHERE inode=?', (id_new,))
             del self.inodes[id_new]
 
 
@@ -643,8 +701,8 @@ class Operations(llfuse.Operations):
         inode_p.ctime = timestamp
         inode_p.mtime = timestamp
 
-        self.db.execute("INSERT INTO contents (name, inode, parent_inode) VALUES(?,?,?)",
-                     (new_name, id_, new_id_p))
+        self.db.execute("INSERT INTO contents (name_id, inode, parent_inode) VALUES(?,?,?)",
+                        (self._add_name(new_name), id_, new_id_p))
         inode = self.inodes[id_]
         inode.refcount += 1
         inode.ctime = timestamp
@@ -731,7 +789,7 @@ class Operations(llfuse.Operations):
         blocks = self.db.get_val("SELECT COUNT(id) FROM objects")
         inodes = self.db.get_val("SELECT COUNT(id) FROM inodes")
         fs_size = self.db.get_val('SELECT SUM(size) FROM inodes') or 0
-        dedup_size = self.db.get_val('SELECT SUM(size) FROM objects') or 0
+        dedup_size = self.db.get_val('SELECT SUM(size) FROM blocks') or 0
         compr_size = self.db.get_val('SELECT SUM(compr_size) FROM objects') or 0
 
         return struct.pack('QQQQQQQ', entries, blocks, inodes, fs_size, dedup_size,
@@ -744,7 +802,7 @@ class Operations(llfuse.Operations):
         # Get number of blocks & inodes
         blocks = self.db.get_val("SELECT COUNT(id) FROM objects")
         inodes = self.db.get_val("SELECT COUNT(id) FROM inodes")
-        size = self.db.get_val('SELECT SUM(size) FROM objects')
+        size = self.db.get_val('SELECT SUM(size) FROM blocks')
 
         if size is None:
             size = 0
@@ -797,7 +855,7 @@ class Operations(llfuse.Operations):
         self.open_inodes[inode.id] += 1
         return (inode.id, inode)
 
-    def _create(self, id_p, name, mode, ctx, rdev=0, target=None, size=0):
+    def _create(self, id_p, name, mode, ctx, rdev=0, size=0):
         if name == CTRL_NAME:
             log.warn('Attempted to create s3ql control file at %s',
                      get_path(id_p, self.db, name))
@@ -819,13 +877,13 @@ class Operations(llfuse.Operations):
         try:
             inode = self.inodes.create_inode(mtime=timestamp, ctime=timestamp, atime=timestamp,
                                              uid=ctx.uid, gid=ctx.gid, mode=mode, refcount=1,
-                                             rdev=rdev, target=target, size=size)
+                                             rdev=rdev, size=size)
         except OutOfInodesError:
             log.warn('Could not find a free inode')
             raise FUSEError(errno.ENOSPC)
 
-        self.db.execute("INSERT INTO contents(name, inode, parent_inode) VALUES(?,?,?)",
-                        (name, inode.id, id_p))
+        self.db.execute("INSERT INTO contents(name_id, inode, parent_inode) VALUES(?,?,?)",
+                        (self._add_name(name), inode.id, id_p))
 
         return inode
 
@@ -984,7 +1042,7 @@ class Operations(llfuse.Operations):
             inode = self.inodes[fh]
             if inode.refcount == 0:
                 self.cache.remove(inode.id, 0, 
-                                  int(math.ceil(inode.size // self.blocksize)))
+                                  int(math.ceil(inode.size / self.blocksize)))
                 # Since the inode is not open, it's not possible that new blocks
                 # get created at this point and we can safely delete the in
                 del self.inodes[fh]

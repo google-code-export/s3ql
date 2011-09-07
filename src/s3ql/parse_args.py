@@ -42,7 +42,7 @@ import argparse
 import re
 import os
 import textwrap
-import logging
+import logging.handlers
 import sys
 
 __all__ = [ 'ArgumentParser', 'DEFAULT_USAGE']
@@ -156,9 +156,9 @@ class ArgumentParser(argparse.ArgumentParser):
                         
     def add_authfile(self):
         self.add_argument("--authfile", type=str, metavar='<path>',
-                      default=os.path.expanduser("~/.s3ql/authinfo"),
+                      default=os.path.expanduser("~/.s3ql/authinfo2"),
                       help='Read authentication credentials from this file '
-                           '(default: `~/.s3ql/authinfo)`')
+                           '(default: `~/.s3ql/authinfo2)`')
     def add_cachedir(self):
         self.add_argument("--cachedir", type=str, metavar='<path>',
                       default=os.path.expanduser("~/.s3ql"),
@@ -192,18 +192,7 @@ class ArgumentParser(argparse.ArgumentParser):
         self.add_argument("storage_url", metavar='<storage-url>',
                           type=storage_url_type, 
                           help='Storage URL of the backend that contains the file system')
-
-    def add_ssl(self):
-        self.add_argument("--ssl", action="store_true", default=False,
-                          help=textwrap.dedent('''\
-                          Use SSL when connecting to remote servers. This option
-                          is not enabled by default, because for encrypted file
-                          systems, all data is already encrypted anyway, and
-                          authentication data is never transmitted in plaintext
-                          even for unencrypted file systems.
-                          '''))
-
-                    
+                 
     def add_subparsers(self, **kw):
         '''Pass parent and set prog to default usage message'''
         kw.setdefault('parser_class', argparse.ArgumentParser)

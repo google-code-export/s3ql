@@ -7,21 +7,22 @@ This program can be distributed under the terms of the GNU GPLv3.
 '''
 
 from __future__ import division, print_function, absolute_import
-
-from contextlib import contextmanager
-from .multi_lock import MultiLock
 from .backends.common import NoSuchObject
-from .ordered_dict import OrderedDict
 from .common import EmbeddedException, ExceptionStoringThread
-from .thread_group import ThreadGroup
-from .upload_manager import UploadManager, RemoveThread, retry_exc
 from .database import NoSuchRowError
+from .multi_lock import MultiLock
+from .ordered_dict import OrderedDict
+from .thread_group import ThreadGroup
+from .upload_manager import UploadManager, RemoveThread
+from contextlib import contextmanager
 from llfuse import lock, lock_released
 import logging
 import os
+import shutil
+import stat
 import threading
 import time
-import stat
+
 
 __all__ = [ "BlockCache" ]
 
@@ -48,14 +49,17 @@ class CacheEntry(file):
 
     """
 
-    __slots__ = [ 'dirty', 'obj_id', 'inode', 'blockno', 'last_access',
+    __slots__ = [ 'dirty', 'block_id', 'inode', 'blockno', 'last_access',
                   'modified_after_upload' ]
 
-    def __init__(self, inode, blockno, obj_id, filename, mode):
-        super(CacheEntry, self).__init__(filename, mode)
+    def __init__(self, inode, blockno, block_id, filename):
+        # Open unbuffered, so that os.fstat(fh.fileno).st_size is
+        # always correct (we can expect that data is read and
+        # written in reasonable chunks)
+        super(CacheEntry, self).__init__(filename, "w+b", buffering=0)
         self.dirty = False
         self.modified_after_upload = False
-        self.obj_id = obj_id
+        self.block_id = block_id
         self.inode = inode
         self.blockno = blockno
         self.last_access = 0
@@ -82,8 +86,8 @@ class CacheEntry(file):
         return super(CacheEntry, self).writelines(*a, **kw)
 
     def __str__(self):
-        return ('<CacheEntry, inode=%d, blockno=%d, dirty=%s, obj_id=%r>' % 
-                (self.inode, self.blockno, self.dirty, self.obj_id))
+        return ('<CacheEntry, inode=%d, blockno=%d, dirty=%s, block_id=%r>' % 
+                (self.inode, self.blockno, self.dirty, self.block_id))
 
 MAX_REMOVAL_THREADS = 25
 class BlockCache(object):
@@ -107,7 +111,7 @@ class BlockCache(object):
             not exist).
     """
 
-    def __init__(self, bucket, db, cachedir, max_size, max_entries=768):
+    def __init__(self, bucket_pool, db, cachedir, max_size, max_entries=768):
         log.debug('Initializing')
         self.cache = OrderedDict()
         self.cachedir = cachedir
@@ -115,10 +119,10 @@ class BlockCache(object):
         self.max_entries = max_entries
         self.size = 0
         self.db = db
-        self.bucket = bucket
+        self.bucket_pool = bucket_pool
         self.mlock = MultiLock()
         self.removal_queue = ThreadGroup(MAX_REMOVAL_THREADS)
-        self.upload_manager = UploadManager(bucket, db, self.removal_queue)
+        self.upload_manager = UploadManager(bucket_pool, db, self.removal_queue)
         self.commit_thread = CommitThread(self)
         self.encountered_errors = False
 
@@ -181,11 +185,6 @@ class BlockCache(object):
         os.rmdir(self.cachedir)
         log.debug('destroy: end')
 
-    def get_bucket_size(self):
-        '''Return total size of the underlying bucket'''
-
-        return self.bucket.get_size()
-
     def __len__(self):
         '''Get number of objects in cache'''
         return len(self.cache)
@@ -194,7 +193,8 @@ class BlockCache(object):
     def get(self, inode, blockno):
         """Get file handle for block `blockno` of `inode`
         
-        This method releases the global lock.
+        This method releases the global lock, and the managed block
+        may do so as well.
         
         Note: if `get` and `remove` are called concurrently, then it is
         possible that a block that has been requested with `get` and
@@ -219,28 +219,29 @@ class BlockCache(object):
                 filename = os.path.join(self.cachedir,
                                         'inode_%d_block_%d' % (inode, blockno))
                 try:
-                    obj_id = self.db.get_val("SELECT obj_id FROM blocks WHERE inode=? AND blockno=?",
-                                          (inode, blockno))
+                    block_id = self.db.get_val('SELECT block_id FROM inode_blocks_v '
+                                               'WHERE inode=? AND blockno=?', (inode, blockno))                    
     
                 # No corresponding object
                 except NoSuchRowError:
                     log.debug('get(inode=%d, block=%d): creating new block', inode, blockno)
-                    el = CacheEntry(inode, blockno, None, filename, "w+b")
+                    el = CacheEntry(inode, blockno, None, filename)
     
                 # Need to download corresponding object
                 else:
                     log.debug('get(inode=%d, block=%d): downloading block', inode, blockno)
-                    el = CacheEntry(inode, blockno, obj_id, filename, "w+b")
-                    with lock_released:
-                        try:
-                            if self.bucket.read_after_create_consistent():
-                                self.bucket.fetch_fh('s3ql_data_%d' % obj_id, el)
-                            else:
-                                retry_exc(300, [ NoSuchObject ], self.bucket.fetch_fh,
-                                          's3ql_data_%d' % obj_id, el)
-                        except:
-                            os.unlink(filename)
-                            raise
+                    # At the moment, objects contain just one block
+                    el = CacheEntry(inode, blockno, block_id, filename)
+                    obj_id = self.db.get_val('SELECT obj_id FROM blocks WHERE id=?', (block_id,))
+                    
+                    try:
+                        with lock_released:
+                            with self.bucket_pool() as bucket:
+                                with bucket.open_read('s3ql_data_%d' % obj_id) as fh:
+                                    shutil.copyfileobj(fh, el)
+                    except:
+                        os.unlink(filename)
+                        raise
                         
                     # Writing will have set dirty flag
                     el.dirty = False
@@ -265,7 +266,6 @@ class BlockCache(object):
             yield el
         finally:
             # Update cachesize
-            el.flush()
             newsize = os.fstat(el.fileno()).st_size
             self.size += newsize - oldsize
 
@@ -342,13 +342,12 @@ class BlockCache(object):
         
         This method releases the global lock.
         
-        Note: if `get` and `remove` are called concurrently, then it
-        is possible that a block that has been requested with `get` and
-        passed to `remove` for deletion will not be deleted.
+        Note: if `get` and `remove` are called concurrently, then it is possible
+        that a block that has been requested with `get` and passed to `remove`
+        for deletion will not be deleted.
         """
 
-        log.debug('remove(inode=%d, start=%d, end=%s): start',
-                  inode, start_no, end_no)
+        log.debug('remove(inode=%d, start=%d, end=%s): start', inode, start_no, end_no)
 
         if end_no is None:
             end_no = start_no + 1
@@ -368,18 +367,18 @@ class BlockCache(object):
                 else:
                     os.unlink(el.name)
 
-                if el.obj_id is None:
+                if el.block_id is None:
                     log.debug('remove(inode=%d, blockno=%d): block only in cache',
                               inode, blockno)
                     continue
 
                 log.debug('remove(inode=%d, blockno=%d): block in cache and db', inode, blockno)
-                obj_id = el.obj_id
+                block_id = el.block_id
 
             else:
                 try:
-                    obj_id = self.db.get_val('SELECT obj_id FROM blocks WHERE inode=? '
-                                          'AND blockno = ?', (inode, blockno))
+                    block_id = self.db.get_val('SELECT block_id FROM inode_blocks_v '
+                                               'WHERE inode=? AND blockno=?', (inode, blockno))   
                 except NoSuchRowError:
                     log.debug('remove(inode=%d, blockno=%d): block does not exist',
                               inode, blockno)
@@ -387,38 +386,52 @@ class BlockCache(object):
 
                 log.debug('remove(inode=%d, blockno=%d): block only in db ', inode, blockno)
 
-            self.db.execute('DELETE FROM blocks WHERE inode=? AND blockno=?',
-                         (inode, blockno))
+            # Detach inode from block
+            if blockno == 0:
+                self.db.execute('UPDATE inodes SET block_id=NULL WHERE id=?', (inode,))
+            else:
+                self.db.execute('DELETE FROM inode_blocks WHERE inode=? AND blockno=?',
+                                (inode, blockno))
                 
+            # Decrease block refcount
+            refcount = self.db.get_val('SELECT refcount FROM blocks WHERE id=?', (block_id,))
+            if refcount > 1:
+                log.debug('remove(inode=%d, blockno=%d): decreasing refcount for block %d',
+                          inode, blockno, block_id)                    
+                self.db.execute('UPDATE blocks SET refcount=refcount-1 WHERE id=?',
+                                (block_id,))
+                continue
+            
+            # Detach block from object
+            log.debug('remove(inode=%d, blockno=%d): deleting block %d',
+                      inode, blockno, block_id)     
+            obj_id = self.db.get_val('SELECT obj_id FROM blocks WHERE id=?', (block_id,))
+            self.db.execute('DELETE FROM blocks WHERE id=?', (block_id,))
+            
+            # Decrease object refcount
             refcount = self.db.get_val('SELECT refcount FROM objects WHERE id=?', (obj_id,))
             if refcount > 1:
                 log.debug('remove(inode=%d, blockno=%d): decreasing refcount for object %d',
                           inode, blockno, obj_id)                    
                 self.db.execute('UPDATE objects SET refcount=refcount-1 WHERE id=?',
-                             (obj_id,))
-                to_delete = False
-            else:
-                log.debug('remove(inode=%d, blockno=%d): deleting object %d',
-                          inode, blockno, obj_id)     
-                self.db.execute('DELETE FROM objects WHERE id=?', (obj_id,))
-                to_delete = True
+                                (obj_id,))
+                continue            
         
-            if to_delete:
-                try:
-                    # Releases global lock:
-                    self.removal_queue.add_thread(RemoveThread(obj_id, self.bucket,
-                                                               (inode, blockno),
-                                                               self.upload_manager))
-                except EmbeddedException as exc:
-                    exc = exc.exc_info[1]
-                    if isinstance(exc, NoSuchObject):
-                        log.warn('Backend seems to have lost object %s', exc.key)
-                        self.encountered_errors = True
-                    else:
-                        raise
+            # Delete object
+            try:
+                # Releases global lock:
+                self.removal_queue.add_thread(RemoveThread(obj_id, self.bucket_pool,
+                                                           (inode, blockno),
+                                                           self.upload_manager))
+            except EmbeddedException as exc:
+                exc = exc.exc_info[1]
+                if isinstance(exc, NoSuchObject):
+                    log.warn('Backend seems to have lost object %s', exc.key)
+                    self.encountered_errors = True
+                else:
+                    raise
 
-        log.debug('remove(inode=%d, start=%d, end=%s): end',
-                  inode, start_no, end_no)
+        log.debug('remove(inode=%d, start=%d, end=%s): end', inode, start_no, end_no)
 
     def flush(self, inode):
         """Flush buffers for `inode`"""

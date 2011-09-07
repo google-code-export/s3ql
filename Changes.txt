@@ -1,4 +1,42 @@
-xxx, S3QL HEAD
+UNRELEASED, S3QL TIP
+
+  * The modules for communicating with the different storage providers
+    have been completely rewritten, resulting in improved performance,
+    more features and better maintainability.
+
+  * S3 buckets can now be used with arbitrary prefixes, allowing to
+    store more than one S3QL file system in a bucket.
+
+  * The format of the --authinfo file has changed. See the
+    documentation for details of the new format. To avoid breaking
+    backwards compatibility, the default file is now called authinfo2.
+
+  * Network errors are now handled much more consistently.
+  
+  * There is a new --nfs option for mount.s3ql that needs to be used
+    when the S3QL file system will be exported over NFS.
+
+  * The local backend now stores data and metadata in the same file,
+    so it needs only half as many files as before.
+
+  * The --homedir option has been replaced by the more finely grained
+    --authfile, --cachedir and --log options.
+
+  * S3QL can now log directly to syslog.
+
+  * The sftp storage backend has been dropped. The recommended way to
+    use S3QL over ssh is to use sshfs
+    (http://fuse.sourceforge.net/sshfs.html) with S3QL's local
+    backend.
+
+  * fsck now checks if all indices have been created. This avoids
+    a huge performance problem when mount.s3ql was interrupted
+    after downloading metadata, but before creating the indices.
+  
+2011-07-23, S3QL 1.1 (development version)
+
+  * Restructured metadata. This should also significantly reduce the
+    size of the SQLite database file.
 
   * Fixed license typo in file header comments, license
     is GNU GPL Version 3, not LGPL.
@@ -9,21 +47,11 @@ xxx, S3QL HEAD
   * When called as root, use umount rather than fusermount for
     compatibility with FUSE4BSD.
 
-  * The --homedir option has been replaced by the more finely grained
-    --authfile, --cachedir and --log options.
-
-  * S3QL can now log directly to syslog.
-
-  * fsck now checks if all indices have been created. This avoids
-    a huge performance problem when mount.s3ql was interrupted
-    after downloading metadata, but before creating the indices.
-
 2011-05-20, S3QL 1.0.1
 
   * Disabled WAL mode again for now because of unexpected problems
     with s3qlcp, s3qllock and s3qlrm (performance going down orders
     of magnitude, and *very* large *.db-wal file in ~/.s3ql).
-    
 
 2011-05-13, S3QL 1.0
 
