@@ -1,0 +1,17 @@
+graft doc
+graft rst
+graft contrib
+graft tests
+graft util
+graft bin
+recursive-include src *.py *.c *.pyx
+include Changes.txt
+include INSTALL.txt
+include README.txt
+include CREDITS.txt
+include LICENSE
+exclude MANIFEST.in
+prune doc/doctrees
+prune doc/man/.doctrees
+global-exclude *.pyc
+global-exclude *.pyo
