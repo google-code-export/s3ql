@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 '''
 scramble_db.py - this file is part of S3QL (http://s3ql.googlecode.com)
 
@@ -14,9 +14,7 @@ This program can be distributed under the terms of the GNU GPLv3.
 #restore_metadata(open('s3ql_metadata.dat', 'rb+'),
 #                 Connection('data.sqlite'))
 
-
-from __future__ import division, print_function, absolute_import
-import cPickle as pickle
+import pickle
 import logging
 import os
 import shutil

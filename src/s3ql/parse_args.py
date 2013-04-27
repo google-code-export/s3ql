@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 '''
 argparse.py - this file is part of S3QL (http://s3ql.googlecode.com)
 
@@ -34,11 +33,10 @@ are:
 # Pylint really gets confused by this module
 #pylint: disable-all
 
-from __future__ import division, print_function, absolute_import
+
 from . import VERSION
 from argparse import ArgumentTypeError, ArgumentError
 import argparse
-import errno
 import logging.handlers
 import os
 import re
@@ -80,11 +78,11 @@ class HelpFormatter(argparse.HelpFormatter):
             return super(HelpFormatter, self)._format_usage(usage, actions, groups, prefix)
 
     def format_help(self):
-        help = super(HelpFormatter, self).format_help()
-        if help.count('\n') > 2:
-            return help + '\n'
+        help_ = super(HelpFormatter, self).format_help()
+        if help_.count('\n') > 2:
+            return help_ + '\n'
         else:
-            return help
+            return help_
 
 
 class SubParsersAction(argparse._SubParsersAction):
@@ -232,18 +230,14 @@ def log_handler_type(s):
         if dirname and not os.path.exists(dirname):
             try:
                 os.makedirs(dirname)
-            except OSError as exc:
-                if exc.errno == errno.EACCES:
-                    raise ArgumentTypeError('No permission to create log file %s' % fullpath)
-                raise
+            except PermissionError:
+                raise ArgumentTypeError('No permission to create log file %s' % fullpath)
                     
         try:
             handler = logging.handlers.RotatingFileHandler(fullpath,
                                                            maxBytes=1024 ** 2, backupCount=5)
-        except IOError as exc:
-            if exc.errno == errno.EACCES:
-                raise ArgumentTypeError('No permission to write log file %s' % fullpath)
-            raise
+        except PermissionError:
+            raise ArgumentTypeError('No permission to write log file %s' % fullpath) from None
         
         formatter = logging.Formatter('%(asctime)s.%(msecs)03d [%(process)s] %(threadName)s: '
                                       '[%(name)s] %(message)s', datefmt="%Y-%m-%d %H:%M:%S")

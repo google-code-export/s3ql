@@ -6,8 +6,6 @@ Copyright (C) 2008-2010 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-
 from contextlib import contextmanager
 from s3ql.backends import local
 from s3ql.backends.common import BackendPool, AbstractBackend
@@ -22,7 +20,7 @@ import stat
 import tempfile
 import threading
 import time
-import unittest2 as unittest
+import unittest
 
 class cache_tests(unittest.TestCase):
 
@@ -230,7 +228,7 @@ class cache_tests(unittest.TestCase):
         self.cache.remove(inode, 1)
         with self.cache.get(inode, 1) as fh:
             fh.seek(0)
-            self.assertTrue(fh.read(42) == '')
+            self.assertEqualss(fh.read(42), b'')
 
     def test_remove_cache_db(self):
         inode = self.inode
@@ -249,7 +247,7 @@ class cache_tests(unittest.TestCase):
 
         with self.cache.get(inode, 1) as fh:
             fh.seek(0)
-            self.assertTrue(fh.read(42) == '')
+            self.assertEquals(fh.read(42), b'')
 
 
     def test_remove_db(self):
@@ -268,7 +266,7 @@ class cache_tests(unittest.TestCase):
         self.cache.backend_pool.verify()
         with self.cache.get(inode, 1) as fh:
             fh.seek(0)
-            self.assertTrue(fh.read(42) == '')
+            self.assertEquals(fh.read(42), b'')
 
 class TestBackendPool(AbstractBackend):
     def __init__(self, backend_pool, no_read=0, no_write=0, no_del=0):
@@ -366,7 +364,7 @@ def commit(cache, inode, block=None):
     uploads have been completed.
     """
 
-    for el in cache.entries.itervalues():
+    for el in cache.entries.values():
         if el.inode != inode:
             continue
         if not el.dirty:

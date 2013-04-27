@@ -1,20 +1,33 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 '''
 setup.py - this file is part of S3QL (http://s3ql.googlecode.com)
 
-Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
+Copyright (C) Nikolaus Rath <Nikolaus@rath.org>
 
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function
-
+# Python version check
 import sys
+if sys.version_info < (3,3):
+    raise SystemExit('Python version is %d.%d.%d, but S3QL requires Python 3.3 or newer'
+                     % sys.version_info[:3])
+    
+try:
+    import setuptools
+except ImportError:
+    raise SystemExit('Setuptools/distribute package not found. Please install from '
+                     'https://pypi.python.org/pypi/distribute')
+import setuptools.command.test as setuptools_test
+from setuptools import Extension
+    
 import os
 import subprocess
 import logging.handlers
 import warnings
 from glob import glob
+import faulthandler
+faulthandler.enable()
 
 # Work around setuptools bug
 # http://bitbucket.org/tarek/distribute/issue/152/
@@ -28,15 +41,8 @@ if os.path.exists(os.path.join(basedir, 'MANIFEST.in')):
     
 # Add S3QL sources    
 sys.path.insert(0, os.path.join(basedir, 'src'))
-import s3ql
-
-# Import distribute
 sys.path.insert(0, os.path.join(basedir, 'util'))
-from distribute_setup import use_setuptools
-use_setuptools(version='0.6.14', download_delay=5)
-import setuptools
-import setuptools.command.test as setuptools_test
-from setuptools import Extension
+import s3ql
 
 class build_docs(setuptools.Command):
     description = 'Build Sphinx documentation'
@@ -58,7 +64,7 @@ class build_docs(setuptools.Command):
             from sphinx.application import Sphinx
             from docutils.utils import SystemMessage
         except ImportError:
-            raise QuietError('This command requires Sphinx to be installed.')
+            raise QuietError('This command requires Sphinx to be installed.')  from None
 
         dest_dir = os.path.join(basedir, 'doc')
         src_dir = os.path.join(basedir, 'rst')
@@ -119,18 +125,9 @@ def main():
         print('MANIFEST.in exists, compiling with developer options')
         compile_args += [ '-Werror', '-Wextra' ]
 
-        # http://bugs.python.org/issue969718
-        if sys.version_info[0] == 2:
-            compile_args.append('-fno-strict-aliasing')
-
-        # http://bugs.python.org/issue7576
-        if sys.version_info[0] == 3 and sys.version_info[1] < 2:
-            compile_args.append('-Wno-missing-field-initializers')
-
     required_pkgs = ['apsw >= 3.7.0',
-                     'pycryptopp',
-                     'llfuse >= 0.37',
-                     'pyliblzma >= 0.5.3' ]
+                     'pycrypto',
+                     'llfuse >= 0.37' ]
 
     setuptools.setup(
           name='s3ql',
@@ -177,10 +174,8 @@ def main():
                          ]
                           },
           install_requires=required_pkgs,
-          tests_require=required_pkgs + [ 'unittest2', 'pytest' ],
-          test_suite='tests',
-          cmdclass={'test': test,
-                    'upload_docs': upload_docs,
+          cmdclass={'upload_docs': upload_docs,
+                    'make_testscript': make_testscript,
                     'build_cython': build_cython,
                     'build_sphinx': build_docs },
           command_options={ 'sdist': { 'formats': ('setup.py', 'bztar') } },
@@ -204,7 +199,7 @@ class build_cython(setuptools.Command):
             from Cython.Compiler.Main import compile as cython_compile
             from Cython.Compiler.Options import extra_warnings
         except ImportError:
-            raise SystemExit('Cython needs to be installed for this command')
+            raise SystemExit('Cython needs to be installed for this command') from None
 
         directives = dict(extra_warnings)
         directives['embedsignature'] = True
@@ -226,54 +221,6 @@ class build_cython(setuptools.Command):
                 else:
                     print('%s is up to date' % (file_ + ext,))
 
-class test(setuptools_test.test):
-    # Attributes defined outside init, required by setuptools.
-    # pylint: disable=W0201
-    description = "Run self-tests"
-    user_options = (setuptools_test.test.user_options +
-                    [('debug=', None, 'Activate debugging for specified modules '
-                                      '(separated by commas, specify "all" for all modules)')])
-
-
-    def initialize_options(self):
-        setuptools_test.test.initialize_options(self)
-        self.debug = None
-
-    def finalize_options(self):
-        setuptools_test.test.finalize_options(self)
-        self.test_args = []
-        self.test_suite = True
-        if self.debug:
-            self.debug = [ x.strip() for x  in self.debug.split(',') ]
-
-    def run_tests(self):
-
-        # Initialize logging if not yet initialized
-        from s3ql.common import (setup_excepthook, add_stdout_logging, LoggerFilter)
-        root_logger = logging.getLogger()
-        if not root_logger.handlers:
-            add_stdout_logging(quiet=True)
-            handler = logging.handlers.RotatingFileHandler("test.log",
-                                                           maxBytes=10 * 1024 ** 2, backupCount=0)
-            formatter = logging.Formatter('%(asctime)s.%(msecs)03d [%(process)s] %(threadName)s: '
-                                          '[%(name)s] %(message)s', datefmt="%Y-%m-%d %H:%M:%S")
-            handler.setFormatter(formatter)
-            root_logger.addHandler(handler)
-            setup_excepthook()
-            if self.debug:
-                root_logger.setLevel(logging.DEBUG)
-                if 'all' not in self.debug:
-                    root_logger.addFilter(LoggerFilter(self.debug, logging.INFO))
-            else:
-                root_logger.setLevel(logging.INFO)
-        else:
-            root_logger.debug("Logging already initialized.")
-
-        # Run tests with pytest
-        import pytest
-        pytest.main(['--exitfirst', 'tests' ])
-
-
 class upload_docs(setuptools.Command):
     user_options = []
     boolean_options = []
@@ -290,6 +237,22 @@ class upload_docs(setuptools.Command):
                                'ebox.rath.org:/var/www/s3ql-docs/'])
         subprocess.check_call(['rsync', '-aHv', '--del', os.path.join(basedir, 'doc', 'manual.pdf'),
                                'ebox.rath.org:/var/www/s3ql-docs/'])
+
+class make_testscript(setuptools.Command):
+    user_options = []
+    boolean_options = []
+    description = "Generate standalone py.test script"
+
+    def initialize_options(self):
+        pass
+
+    def finalize_options(self):
+        pass
+
+    def run(self):
+        import pytest
+        pytest.main(['--genscript', 'runtests.py'])
+        os.chmod('runtests.py', 0o755)
 
 if __name__ == '__main__':
     main()

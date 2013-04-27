@@ -6,8 +6,6 @@ Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-
 from s3ql.backends import local
 from s3ql.common import ROOT_INODE
 from s3ql.mkfs import init_tables
@@ -19,7 +17,7 @@ import shutil
 import stat
 import tempfile
 import time
-import unittest2 as unittest
+import unittest
 
 
 class fsck_tests(unittest.TestCase):
@@ -352,7 +350,7 @@ class fsck_tests(unittest.TestCase):
         last = inodes[0]
         for inode in inodes[1:]:
             self.db.execute('INSERT INTO contents (name_id, inode, parent_inode) VALUES(?, ?, ?)',
-                            (self._add_name(bytes(inode)), inode, last))
+                            (self._add_name(int(inode).encode()), inode, last))
             last = inode
 
         self.assert_fsck(self.fsck.check_loops)

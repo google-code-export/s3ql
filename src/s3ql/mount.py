@@ -6,12 +6,12 @@ Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
+
 from . import fs, CURRENT_FS_REV
 from .backends.common import get_backend_factory, BackendPool, DanglingStorageURLError
 from .block_cache import BlockCache
 from .common import (setup_logging, get_backend_cachedir, get_seq_no, QuietError, stream_write_bz2, 
-    stream_read_bz2)
+    stream_read_bz2, PICKLE_PROTOCOL)
 from .daemonize import daemonize
 from .database import Connection
 from .inode_cache import InodeCache
@@ -19,15 +19,16 @@ from .metadata import cycle_metadata, dump_metadata, restore_metadata
 from .parse_args import ArgumentParser
 from threading import Thread
 import argparse
-import cPickle as pickle
+import pickle
 import llfuse
 import logging
 import os
 import signal
+import faulthandler
 import stat
 import sys
 import tempfile
-import thread
+import _thread
 import threading
 import time
 
@@ -92,7 +93,7 @@ def main(args=None):
         with backend_pool() as backend:
             (param, db) = get_metadata(backend, cachepath)
     except DanglingStorageURLError as exc:
-        raise QuietError(str(exc))
+        raise QuietError(str(exc)) from None
 
     if param['max_obj_size'] < options.min_obj_size:
         raise QuietError('Maximum object size must be bigger than minimum object size.')
@@ -117,9 +118,14 @@ def main(args=None):
     log.info('Mounting filesystem...')
     llfuse.init(operations, options.mountpoint, get_fuse_opts(options))
 
-    if not options.fg:
+    if options.fg:
+        faulthandler.enable()
+    else:
         if stdout_log_handler:
             logging.getLogger().removeHandler(stdout_log_handler)
+        global crit_log_fh
+        crit_log_fh = open(os.path.join(options.cachedir, 'mount.s3ql_crit.log'), 'a')
+        faulthandler.enable(crit_log_fh)
         daemonize(options.cachedir)
 
     exc_info = setup_exchook()
@@ -144,7 +150,7 @@ def main(args=None):
         if exc_info:
             (tmp0, tmp1, tmp2) = exc_info
             exc_info[:] = []
-            raise tmp0, tmp1, tmp2
+            raise tmp0(tmp1).with_traceback(tmp2)
 
         log.info("FUSE main loop terminated.")
 
@@ -199,7 +205,7 @@ def main(args=None):
     # Re-raise if there's been an exception during cleanup
     # (either in main thread or other thread)
     if exc_info:
-        raise exc_info[0], exc_info[1], exc_info[2]
+        raise exc_info[0](exc_info[1]).with_traceback(exc_info[2])
 
     # At this point, there should be no other threads left
 
@@ -212,7 +218,7 @@ def main(args=None):
             log.info('File system unchanged, not uploading metadata.')
             del backend['s3ql_seq_no_%d' % param['seq_no']]
             param['seq_no'] -= 1
-            pickle.dump(param, open(cachepath + '.params', 'wb'), 2)
+            pickle.dump(param, open(cachepath + '.params', 'wb'), PICKLE_PROTOCOL)
         elif seq_no == param['seq_no']:
             cycle_metadata(backend)
             param['last-modified'] = time.time()
@@ -229,14 +235,14 @@ def main(args=None):
             obj_fh = backend.perform_write(do_write, "s3ql_metadata", metadata=param,
                                           is_compressed=True)
             log.info('Wrote %.2f MiB of compressed metadata.', obj_fh.get_obj_size() / 1024 ** 2)
-            pickle.dump(param, open(cachepath + '.params', 'wb'), 2)
+            pickle.dump(param, open(cachepath + '.params', 'wb'), PICKLE_PROTOCOL)
         else:
             log.error('Remote metadata is newer than local (%d vs %d), '
                       'refusing to overwrite!', seq_no, param['seq_no'])
             log.error('The locally cached metadata will be *lost* the next time the file system '
                       'is mounted or checked and has therefore been backed up.')
             for name in (cachepath + '.params', cachepath + '.db'):
-                for i in reversed(range(4)):
+                for i in range(4)[::-1]:
                     if os.path.exists(name + '.%d' % i):
                         os.rename(name + '.%d' % i, name + '.%d' % (i + 1))
                 os.rename(name, name + '.0')
@@ -353,7 +359,7 @@ def get_metadata(backend, cachepath):
     param['seq_no'] += 1
     param['needs_fsck'] = True
     backend['s3ql_seq_no_%d' % param['seq_no']] = 'Empty'
-    pickle.dump(param, open(cachepath + '.params', 'wb'), 2)
+    pickle.dump(param, open(cachepath + '.params', 'wb'), PICKLE_PROTOCOL)
     param['needs_fsck'] = False
 
     return (param, db)
@@ -362,7 +368,7 @@ def get_fuse_opts(options):
     '''Return fuse options for given command line options'''
 
     fuse_opts = [ b"nonempty", b'fsname=%s' % options.storage_url,
-                  'subtype=s3ql' ]
+                  b'subtype=s3ql' ]
 
     if options.allow_other:
         fuse_opts.append(b'allow_other')
@@ -514,7 +520,7 @@ class MetadataUploadThread(Thread):
         log.debug('MetadataUploadThread: start')
 
         while not self.quit:
-            timed_wait(self.event, self.interval, 2)
+            self.event.wait(self.interval)
             self.event.clear()
 
             if self.quit:
@@ -575,12 +581,12 @@ def setup_exchook():
     by this function.
     '''
 
-    this_thread = thread.get_ident()
+    this_thread = _thread.get_ident()
     old_exchook = sys.excepthook
     exc_info = []
 
     def exchook(type_, val, tb):
-        if (thread.get_ident() != this_thread
+        if (_thread.get_ident() != this_thread
             and not exc_info):
             os.kill(os.getpid(), signal.SIGTERM)
             exc_info.append(type_)
@@ -591,7 +597,7 @@ def setup_exchook():
 
         # If the main thread re-raised exception, there is no need to call
         # excepthook again
-        elif not (thread.get_ident() == this_thread
+        elif not (_thread.get_ident() == this_thread
                   and exc_info == [type_, val, tb]):
             old_exchook(type_, val, tb)
 
@@ -642,7 +648,7 @@ class CommitThread(Thread):
                     break
 
             if not did_sth:
-                timed_wait(self.stop_event, 6, 2)
+                self.stop_event.wait(5)
 
         log.debug('CommitThread: end')
 
@@ -650,30 +656,6 @@ class CommitThread(Thread):
         '''Signal thread to terminate'''
 
         self.stop_event.set()
-
-
-def timed_wait(event, timeout, interval=1):
-    '''Wait for *event* to occur
-    
-    In Python 3, this is just a wrapper around event.wait() which works well. 
-    
-    In Python 2, however, event.wait() polls the event at small intervals
-    which causes noticeable CPU consumption. Therefore, for Python 2 we we 
-    implement our own poll loop that runs at a rate of our own choosing.
-    '''
-    if sys.version_info[0] > 2:
-        return event.wait(timeout)
-
-    endtime = time.time() + timeout
-    while True:
-        if event.is_set():
-            return
-        
-        now = time.time()
-        if now > endtime:
-            return
-        
-        time.sleep(min(interval, endtime - now))            
 
 if __name__ == '__main__':
     main(sys.argv[1:])

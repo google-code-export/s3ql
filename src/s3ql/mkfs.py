@@ -6,16 +6,17 @@ Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
+
 from . import CURRENT_FS_REV
 from .backends.common import get_backend, BetterBackend, DanglingStorageURLError
-from .common import get_backend_cachedir, setup_logging, QuietError, CTRL_INODE, stream_write_bz2
+from .common import (get_backend_cachedir, setup_logging, QuietError, CTRL_INODE, 
+                     stream_write_bz2, PICKLE_PROTOCOL)
 from .database import Connection
 from .metadata import dump_metadata, create_tables
 from .parse_args import ArgumentParser
 from getpass import getpass
 from llfuse import ROOT_INODE
-import cPickle as pickle
+import pickle
 import logging
 import os
 import shutil
@@ -94,7 +95,7 @@ def main(args=None):
     try:
         plain_backend = get_backend(options, plain=True)
     except DanglingStorageURLError as exc:
-        raise QuietError(str(exc))
+        raise QuietError(str(exc)) from None
 
     log.info("Before using S3QL, make sure to read the user's guide, especially\n"
              "the 'Important Rules to Avoid Loosing Data' section.")
@@ -172,7 +173,7 @@ def main(args=None):
     obj_fh = backend.perform_write(do_write, "s3ql_metadata", metadata=param,
                                   is_compressed=True)
     log.info('Wrote %.2f MiB of compressed metadata.', obj_fh.get_obj_size() / 1024 ** 2)
-    pickle.dump(param, open(cachepath + '.params', 'wb'), 2)
+    pickle.dump(param, open(cachepath + '.params', 'wb'), PICKLE_PROTOCOL)
 
 
 if __name__ == '__main__':

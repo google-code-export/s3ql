@@ -6,17 +6,18 @@ Copyright (C) Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
+
 from . import CURRENT_FS_REV
 from .backends.common import NoSuchObject, get_backend, DanglingStorageURLError
 from .common import (ROOT_INODE, inode_for_path, sha256_fh, get_path, BUFSIZE, get_backend_cachedir, 
-    setup_logging, QuietError, get_seq_no, stream_write_bz2, stream_read_bz2, CTRL_INODE)
+    setup_logging, QuietError, get_seq_no, stream_write_bz2, stream_read_bz2, CTRL_INODE,
+    PICKLE_PROTOCOL)
 from .database import NoSuchRowError, Connection
 from .metadata import restore_metadata, cycle_metadata, dump_metadata, create_tables
 from .parse_args import ArgumentParser
 from os.path import basename
 import apsw
-import cPickle as pickle
+import pickle
 import logging
 import os
 import re
@@ -941,7 +942,7 @@ class Fsck(object):
                 self.conn.get_val("SELECT inode FROM contents_v "
                                   "WHERE name=? AND parent_inode=?", (newname, inode_p))
                 i += 1
-                newname = name + bytes(i)
+                newname = name + str(i).encode()
 
         except NoSuchRowError:
             pass
@@ -1081,7 +1082,7 @@ def main(args=None):
     try:
         backend = get_backend(options)
     except DanglingStorageURLError as exc:
-        raise QuietError(str(exc))
+        raise QuietError(str(exc)) from None
 
     log.info('Starting fsck of %s', options.storage_url)
     
@@ -1156,14 +1157,14 @@ def main(args=None):
         try:
             # get_list may raise CorruptError itself
             res = db.get_list('PRAGMA integrity_check(20)')
-            if res[0][0] != u'ok':
+            if res[0][0] != 'ok':
                 log.error('\n'.join(x[0] for x in res))
                 raise apsw.CorruptError()
         except apsw.CorruptError:
             raise QuietError('Local metadata is corrupted. Remove or repair the following '
                              'files manually and re-run fsck:\n'
                              + cachepath + '.db (corrupted)\n'
-                             + cachepath + '.param (intact)')
+                             + cachepath + '.param (intact)') from None
     else:
         def do_read(fh):
             tmpfh = tempfile.TemporaryFile()
@@ -1185,7 +1186,7 @@ def main(args=None):
     param['seq_no'] += 1
     param['needs_fsck'] = True
     backend['s3ql_seq_no_%d' % param['seq_no']] = 'Empty'
-    pickle.dump(param, open(cachepath + '.params', 'wb'), 2)
+    pickle.dump(param, open(cachepath + '.params', 'wb'), PICKLE_PROTOCOL)
 
     fsck = Fsck(cachepath + '-cache', backend, param, db)
     fsck.check()
@@ -1223,7 +1224,7 @@ def main(args=None):
     obj_fh = backend.perform_write(do_write, "s3ql_metadata", metadata=param,
                                   is_compressed=True)
     log.info('Wrote %.2f MiB of compressed metadata.', obj_fh.get_obj_size() / 1024 ** 2)
-    pickle.dump(param, open(cachepath + '.params', 'wb'), 2)
+    pickle.dump(param, open(cachepath + '.params', 'wb'), PICKLE_PROTOCOL)
 
     db.execute('ANALYZE')
     db.execute('VACUUM')

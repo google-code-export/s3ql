@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 '''
 benchmark.py - this file is part of S3QL (http://s3ql.googlecode.com)
 
@@ -11,7 +11,7 @@ Copyright (C) 2010 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
+
 import argparse
 import atexit
 import logging
@@ -121,7 +121,7 @@ def main(args=None):
     try:
         backend = get_backend(options, plain=True)
     except DanglingStorageURLError as exc:
-        raise QuietError(str(exc))
+        raise QuietError(str(exc)) from None
     
     upload_time = 0
     size = 512 * 1024

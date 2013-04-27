@@ -6,11 +6,10 @@ Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-from .common import setup_logging, CTRL_NAME, QuietError
+
+from .common import setup_logging, QuietError, assert_fs_owner, PICKLE_PROTOCOL
 from .parse_args import ArgumentParser
-import cPickle as pickle
-import errno
+import pickle
 import llfuse
 import logging
 import os
@@ -78,24 +77,18 @@ def main(args=None):
     if fstat_p.st_dev != fstat_s.st_dev:
         raise QuietError('Source and target are not on the same file system.')
 
-    ctrlfile = os.path.join(parent, CTRL_NAME)
-    if not (CTRL_NAME not in llfuse.listdir(parent) and os.path.exists(ctrlfile)):
-        raise QuietError('Source and target are not on an S3QL file system')
-
-    if os.stat(ctrlfile).st_uid != os.geteuid() and os.geteuid() != 0:
-        raise QuietError('Only root and the mounting user may run s3qlcp.')
-
+    if os.path.ismount(options.ource):
+        raise QuietError('%s is a mount point.' % options.source)
+        
+    ctrlfile = assert_fs_owner(options.source)
     try:
         os.mkdir(options.target)
-    except OSError as exc:
-        if exc.errno == errno.EACCES:
-            raise QuietError('No permission to create target directory')
-        else:
-            raise
+    except PermissionError:
+        raise QuietError('No permission to create target directory') from None
 
     fstat_t = os.stat(options.target)
     llfuse.setxattr(ctrlfile, 'copy', pickle.dumps((fstat_s.st_ino, fstat_t.st_ino),
-                                                    pickle.HIGHEST_PROTOCOL))
+                                                    PICKLE_PROTOCOL))
 
 
 if __name__ == '__main__':

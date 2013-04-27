@@ -6,10 +6,9 @@ Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import absolute_import, division, print_function
 from os.path import basename
-from s3ql.common import CTRL_NAME
-import cPickle as pickle
+from s3ql.common import CTRL_NAME, PICKLE_PROTOCOL
+import pickle
 import filecmp
 import llfuse
 import logging
@@ -23,7 +22,7 @@ import tempfile
 import threading
 import time
 import traceback
-import unittest2 as unittest
+import unittest
 
 
 log = logging.getLogger()
@@ -102,7 +101,7 @@ def retry(timeout, fn, *a, **kw):
     
     If the return value of fn() returns something True, this value
     is returned. Otherwise, the function is called repeatedly for
-    `timeout` seconds. If the timeout is reached, `TimeoutError` is
+    `timeout` seconds. If the timeout is reached, `RetryTimeoutError` is
     raised.
     """
 
@@ -117,9 +116,9 @@ def retry(timeout, fn, *a, **kw):
         if step < waited / 30:
             step *= 2
 
-    raise TimeoutError()
+    raise RetryTimeoutError()
 
-class TimeoutError(Exception):
+class RetryTimeoutError(Exception):
     '''Raised by `retry()` when a timeout is reached.'''
 
     pass
@@ -127,7 +126,8 @@ class TimeoutError(Exception):
 def skip_if_no_fusermount():
     '''Raise SkipTest if fusermount is not available'''
 
-    which = subprocess.Popen(['which', 'fusermount'], stdout=subprocess.PIPE)
+    which = subprocess.Popen(['which', 'fusermount'], stdout=subprocess.PIPE,
+                             universal_newlines=True)
     fusermount_path = which.communicate()[0].strip()
 
     if not fusermount_path or which.wait() != 0:
@@ -147,13 +147,23 @@ def skip_if_no_fusermount():
         subprocess.check_call([fusermount_path, '-V'],
                               stdout=open('/dev/null', 'wb'))
     except subprocess.CalledProcessError:
-        raise unittest.SkipTest('Unable to execute fusermount')
+        raise unittest.SkipTest('Unable to execute fusermount') from None
 
+def skip_without_rsync():
+    try:
+        subprocess.call(['rsync', '--version'],
+                        stderr=subprocess.STDOUT,
+                        stdout=open('/dev/null', 'wb'))
+    except FileNotFoundError:
+        raise unittest.SkipTest('rsync not installed') from None
+
+    
 if __name__ == '__main__':
     mypath = sys.argv[0]
 else:
     mypath = __file__
 BASEDIR = os.path.abspath(os.path.join(os.path.dirname(mypath), '..'))
+
 
 class fuse_tests(unittest.TestCase):
 
@@ -179,7 +189,8 @@ class fuse_tests(unittest.TestCase):
         proc = subprocess.Popen([os.path.join(BASEDIR, 'bin', 'mkfs.s3ql'),
                                  '-L', 'test fs', '--max-obj-size', '500',
                                  '--cachedir', self.cache_dir, '--quiet',
-                                 self.storage_url ], stdin=subprocess.PIPE)
+                                 self.storage_url ], stdin=subprocess.PIPE,
+                                universal_newlines=True)
 
         print(self.passphrase, file=proc.stdin)
         print(self.passphrase, file=proc.stdin)
@@ -192,7 +203,7 @@ class fuse_tests(unittest.TestCase):
                                                 "--fg", '--cachedir', self.cache_dir,
                                                 '--log', 'none', '--quiet',
                                                   self.storage_url, self.mnt_dir],
-                                                  stdin=subprocess.PIPE)
+                                                  stdin=subprocess.PIPE, universal_newlines=True)
         print(self.passphrase, file=self.mount_process.stdin)
         self.mount_process.stdin.close()
         def poll():
@@ -218,7 +229,8 @@ class fuse_tests(unittest.TestCase):
         proc = subprocess.Popen([os.path.join(BASEDIR, 'bin', 'fsck.s3ql'),
                                  '--force', '--quiet', '--log', 'none',
                                  '--cachedir', self.cache_dir,
-                                 self.storage_url ], stdin=subprocess.PIPE)
+                                 self.storage_url ], stdin=subprocess.PIPE, 
+                                universal_newlines=True)
         print(self.passphrase, file=proc.stdin)
         proc.stdin.close()
         self.assertEqual(proc.wait(), 0)
@@ -274,7 +286,7 @@ class fuse_tests(unittest.TestCase):
         self.assertEquals(fstat.st_nlink, 1)
         self.assertTrue(dirname in llfuse.listdir(self.mnt_dir))
         os.rmdir(fullname)
-        self.assertRaises(OSError, os.stat, fullname)
+        self.assertRaises(FileNotFoundError, os.stat, fullname)
         self.assertTrue(dirname not in llfuse.listdir(self.mnt_dir))
 
     def tst_symlink(self):
@@ -287,7 +299,7 @@ class fuse_tests(unittest.TestCase):
         self.assertEquals(fstat.st_nlink, 1)
         self.assertTrue(linkname in llfuse.listdir(self.mnt_dir))
         os.unlink(fullname)
-        self.assertRaises(OSError, os.lstat, fullname)
+        self.assertRaises(FileNotFoundError, os.lstat, fullname)
         self.assertTrue(linkname not in llfuse.listdir(self.mnt_dir))
 
     def tst_mknod(self):
@@ -300,7 +312,7 @@ class fuse_tests(unittest.TestCase):
         self.assertTrue(basename(filename) in llfuse.listdir(self.mnt_dir))
         self.assertTrue(filecmp.cmp(src, filename, False))
         os.unlink(filename)
-        self.assertRaises(OSError, os.stat, filename)
+        self.assertRaises(FileNotFoundError, os.stat, filename)
         self.assertTrue(basename(filename) not in llfuse.listdir(self.mnt_dir))
 
     def tst_chown(self):
@@ -323,7 +335,7 @@ class fuse_tests(unittest.TestCase):
         self.assertEquals(fstat.st_gid, gid_new)
 
         os.rmdir(filename)
-        self.assertRaises(OSError, os.stat, filename)
+        self.assertRaises(FileNotFoundError, os.stat, filename)
         self.assertTrue(basename(filename) not in llfuse.listdir(self.mnt_dir))
 
 
@@ -431,8 +443,8 @@ class fuse_tests(unittest.TestCase):
         self.assertTrue(dirname in llfuse.listdir(self.mnt_dir))
         llfuse.setxattr('%s/%s' % (self.mnt_dir, CTRL_NAME), 
                         'rmtree', pickle.dumps((llfuse.ROOT_INODE, dirname),
-                                               pickle.HIGHEST_PROTOCOL))                
-        self.assertRaises(OSError, os.stat, fullname)
+                                               PICKLE_PROTOCOL))                
+        self.assertRaises(FileNotFoundError, os.stat, fullname)
         self.assertTrue(dirname not in llfuse.listdir(self.mnt_dir))
 
         
@@ -477,7 +489,7 @@ def populate_dir(path, entries=4096, max_size=10*1024*1024,
             if len_ > 0:
                 pos = random.choice((-1,0,1)) # Prefix, Middle, Suffix
                 s = ''.join(special_chars[random.randrange(len(special_chars))]
-                            for _ in xrange(len_))
+                            for _ in range(len_))
                 if pos == -1:
                     name = s + name
                 elif pos == 1:
@@ -497,7 +509,7 @@ def populate_dir(path, entries=4096, max_size=10*1024*1024,
     subdir_cnt = random.randint(0, int(0.1 * entries))
     entries -= subdir_cnt
     dirs = [ path ]
-    for _ in xrange(subdir_cnt):
+    for _ in range(subdir_cnt):
         idx = random.randrange(len(dirs))
         name = random_name(dirs[idx])
         os.mkdir(name)
@@ -510,7 +522,7 @@ def populate_dir(path, entries=4096, max_size=10*1024*1024,
     file_cnt = random.randint(int(entries/3), int(3*entries/4))
     entries -= file_cnt
     files = []
-    for _ in xrange(file_cnt):
+    for _ in range(file_cnt):
         idx = random.randrange(len(dirs))
         name = random_name(dirs[idx])
         size = random.randint(0, int(0.01 * max_size))
@@ -532,7 +544,7 @@ def populate_dir(path, entries=4096, max_size=10*1024*1024,
     #
     fifo_cnt = random.randint(int(entries/3), int(2*entries/3))
     entries -= fifo_cnt
-    for _ in xrange(fifo_cnt):
+    for _ in range(fifo_cnt):
         name = random_name(dirs[random.randrange(len(dirs))])
         os.mkfifo(name)
         files.append(name)
@@ -542,7 +554,7 @@ def populate_dir(path, entries=4096, max_size=10*1024*1024,
     #
     symlink_cnt = random.randint(int(entries/3), int(2*entries/3))
     entries -= symlink_cnt
-    for _ in xrange(symlink_cnt):
+    for _ in range(symlink_cnt):
         relative = random.choice((True, False))
         existing = random.choice((True, False))
         idx = random.randrange(len(dirs))
@@ -570,7 +582,7 @@ def populate_dir(path, entries=4096, max_size=10*1024*1024,
     #
     hardlink_cnt = random.randint(int(entries/3), int(2*entries/3))
     entries -= hardlink_cnt
-    for _ in xrange(hardlink_cnt):
+    for _ in range(hardlink_cnt):
         samedir = random.choice((True, False))
         
         target = files[random.randrange(len(files))]

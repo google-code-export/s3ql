@@ -6,24 +6,23 @@ Copyright (C) Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
+
 from ..common import BUFSIZE, QuietError
 from .common import AbstractBackend, NoSuchObject, retry, AuthorizationError, http_connection, \
     AuthenticationError
 from .common import DanglingStorageURLError
 from base64 import b64encode
 from email.utils import parsedate_tz, mktime_tz
-from urlparse import urlsplit
+from urllib.parse import urlsplit
 import hashlib
 import hmac
-import httplib
+import http.client
 import logging
-import sys
 import re
 import tempfile
 import time
-import urllib
-import xml.etree.cElementTree as ElementTree
+import urllib.parse
+from xml.etree import ElementTree
 from s3ql.backends.common import is_temp_network_error
 
 
@@ -128,7 +127,7 @@ class Backend(AbstractBackend):
             if force:
                 pass
             else:
-                raise NoSuchObject(key)
+                raise NoSuchObject(key) from None
 
     def list(self, prefix=''):
         '''List keys in backend
@@ -145,7 +144,7 @@ class Backend(AbstractBackend):
         iterator = self._list(prefix, marker)
         while True:
             try:
-                marker = iterator.next()
+                marker = next(iterator)
                 waited = 0
             except StopIteration:
                 break
@@ -194,7 +193,7 @@ class Backend(AbstractBackend):
                 raise RuntimeError('unexpected content type: %s' % resp.getheader('Content-Type'))
 
             itree = iter(ElementTree.iterparse(resp, events=("start", "end")))
-            (event, root) = itree.next()
+            (event, root) = next(itree)
 
             namespace = re.sub(r'^\{(.+)\}.+$', r'\1', root.tag)
             if namespace != self.namespace:
@@ -217,7 +216,7 @@ class Backend(AbstractBackend):
                 # Need to read rest of response
                 while True:
                     buf = resp.read(BUFSIZE)
-                    if buf == '':
+                    if buf == b'':
                         break
                 break
 
@@ -235,7 +234,7 @@ class Backend(AbstractBackend):
             assert resp.length == 0
         except HTTPError as exc:
             if exc.status == 404:
-                raise NoSuchObject(key)
+                raise NoSuchObject(key) from None
             else:
                 raise
 
@@ -252,7 +251,7 @@ class Backend(AbstractBackend):
             assert resp.length == 0
         except HTTPError as exc:
             if exc.status == 404:
-                raise NoSuchObject(key)
+                raise NoSuchObject(key) from None
             else:
                 raise
 
@@ -274,7 +273,7 @@ class Backend(AbstractBackend):
         try:
             resp = self._do_request('GET', '/%s%s' % (self.prefix, key))
         except NoSuchKeyError:
-            raise NoSuchObject(key)
+            raise NoSuchObject(key) from None
 
         return ObjectR(key, resp, self, extractmeta(resp))
 
@@ -297,7 +296,7 @@ class Backend(AbstractBackend):
 
         headers = dict()
         if metadata:
-            for (hdr, val) in metadata.iteritems():
+            for (hdr, val) in metadata.items():
                 headers['x-amz-meta-%s' % hdr] = val
 
         return ObjectW(key, self, headers)
@@ -320,7 +319,7 @@ class Backend(AbstractBackend):
             # Discard response body
             resp.read()
         except NoSuchKeyError:
-            raise NoSuchObject(src)
+            raise NoSuchObject(src) from None
 
     def _do_request(self, method, path, subres=None, query_string=None,
                     headers=None, body=None):
@@ -360,9 +359,9 @@ class Backend(AbstractBackend):
             #pylint: disable=E1103
             o = urlsplit(new_url)
             if o.scheme:
-                if isinstance(self.conn, httplib.HTTPConnection) and o.scheme != 'http':
+                if isinstance(self.conn, http.client.HTTPConnection) and o.scheme != 'http':
                     raise RuntimeError('Redirect to non-http URL')
-                elif isinstance(self.conn, httplib.HTTPSConnection) and o.scheme != 'https':
+                elif isinstance(self.conn, http.client.HTTPSConnection) and o.scheme != 'https':
                     raise RuntimeError('Redirect to non-https URL')
             if o.hostname != self.hostname or o.port != self.port:
                 self.hostname = o.hostname
@@ -371,7 +370,7 @@ class Backend(AbstractBackend):
             else:
                 raise RuntimeError('Redirect to different path on same host')
             
-            if body and not isinstance(body, bytes):
+            if body and not isinstance(body, (bytes, bytearray, memoryview)):
                 body.seek(0)
 
             # Read and discard body
@@ -430,7 +429,7 @@ class Backend(AbstractBackend):
         # See http://docs.amazonwebservices.com/AmazonS3/latest/dev/RESTAuthentication.html
 
         # Lowercase headers
-        keys = list(headers.iterkeys())
+        keys = list(headers.keys())
         for key in keys:
             key_l = key.lower()
             if key_l == key:
@@ -460,23 +459,25 @@ class Backend(AbstractBackend):
 
 
         # Always include bucket name in path for signing
-        sign_path = urllib.quote('/%s%s' % (self.bucket_name, path))
+        sign_path = urllib.parse.quote('/%s%s' % (self.bucket_name, path))
         auth_strs.append(sign_path)
         if subres:
             auth_strs.append('?%s' % subres)
 
         # False positive, hashlib *does* have sha1 member
         #pylint: disable=E1101
-        signature = b64encode(hmac.new(self.password, ''.join(auth_strs), hashlib.sha1).digest())
+        auth_str = ''.join(auth_strs).encode()
+        signature = b64encode(hmac.new(self.password.encode(), auth_str,
+                                       hashlib.sha1).digest())
 
         headers['authorization'] = 'AWS %s:%s' % (self.login, signature)
 
         # Construct full path
         if not self.hostname.startswith(self.bucket_name):
             path = '/%s%s' % (self.bucket_name, path)
-        path = urllib.quote(path)
+        path = urllib.parse.quote(path)
         if query_string:
-            s = urllib.urlencode(query_string, doseq=True)
+            s = urllib.parse.urlencode(query_string, doseq=True)
             if subres:
                 path += '?%s&%s' % (subres, s)
             else:
@@ -498,6 +499,10 @@ class Backend(AbstractBackend):
 class ObjectR(object):
     '''An S3 object open for reading'''
 
+    # NOTE: This class is used as a base class for the swift backend,
+    # so changes here should be checked for their effects on other
+    # backends.
+    
     def __init__(self, key, resp, backend, metadata=None):
         self.key = key
         self.resp = resp
@@ -526,21 +531,16 @@ class ObjectR(object):
             self.md5_checked = True
             
             if not self.resp.isclosed():
-                # http://bugs.python.org/issue15633
-                ver = sys.version_info
-                if ((ver > (2,7,3) and ver < (3,0,0))
-                    or (ver > (3,2,3) and ver < (3,3,0))
-                    or (ver > (3,3,0))):
-                    # Should be fixed in these version
-                    log.error('ObjectR.read(): response not closed after end of data, '
-                              'please report on http://code.google.com/p/s3ql/issues/')
-                    log.error('Method: %s, chunked: %s, read length: %s '
-                              'response length: %s, chunk_left: %s, status: %d '
-                              'reason "%s", version: %s, will_close: %s',
-                              self.resp._method, self.resp.chunked, size, self.resp.length,
-                              self.resp.chunk_left, self.resp.status, self.resp.reason,
-                              self.resp.version, self.resp.will_close)
-                                    
+                # http://bugs.python.org/issue15633, but should be fixed in 
+                # Python 3.3 and newer
+                log.error('ObjectR.read(): response not closed after end of data, '
+                          'please report on http://code.google.com/p/s3ql/issues/')
+                log.error('Method: %s, chunked: %s, read length: %s '
+                          'response length: %s, chunk_left: %s, status: %d '
+                          'reason "%s", version: %s, will_close: %s',
+                          self.resp._method, self.resp.chunked, size, self.resp.length,
+                          self.resp.chunk_left, self.resp.status, self.resp.reason,
+                          self.resp.version, self.resp.will_close)             
                 self.resp.close() 
             
             if etag != self.md5.hexdigest():
@@ -570,14 +570,22 @@ class ObjectW(object):
     All data is first cached in memory, upload only starts when
     the close() method is called.
     '''
-
+    
+    # NOTE: This class is used as a base class for the swift backend,
+    # so changes here should be checked for their effects on other
+    # backends.
+    
     def __init__(self, key, backend, headers):
         self.key = key
         self.backend = backend
         self.headers = headers
         self.closed = False
         self.obj_size = 0
-        self.fh = tempfile.TemporaryFile(bufsize=0) # no Python buffering
+        
+        # According to http://docs.python.org/3/library/functions.html#open
+        # the buffer size is typically ~8 kB. We process data in much 
+        # larger chunks, so buffering would only hurt performance.
+        self.fh = tempfile.TemporaryFile(bufsize=0) 
 
         # False positive, hashlib *does* have md5 member
         #pylint: disable=E1101        
@@ -637,12 +645,17 @@ class ObjectW(object):
 def get_S3Error(code, msg):
     '''Instantiate most specific S3Error subclass'''
 
+    # Special case
+    # http://code.google.com/p/s3ql/issues/detail?id=369
+    if code == 'Timeout':
+        code = 'RequestTimeout'  
+
     if code.endswith('Error'):
         name = code
     else:
         name = code + 'Error'
-    class_ = globals().get(name, S3Error)
-
+    class_ = globals().get(name, S3Error)    
+    
     if not issubclass(class_, S3Error):
         return S3Error(code, msg)
     
@@ -725,7 +738,6 @@ class InvalidSecurityError(S3Error, AuthenticationError): pass
 class SignatureDoesNotMatchError(S3Error, AuthenticationError): pass
 class OperationAbortedError(S3Error): pass
 class RequestTimeoutError(S3Error): pass
-class TimeoutError(RequestTimeoutError): pass
 class SlowDownError(S3Error): pass
 class RequestTimeTooSkewedError(S3Error): pass
 class NoSuchBucketError(S3Error, DanglingStorageURLError): pass

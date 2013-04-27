@@ -6,15 +6,15 @@ Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
+
 from .backends.common import NoSuchObject, ChecksumError
 from .common import (get_path, CTRL_NAME, CTRL_INODE, LoggerFilter)
 from .database import NoSuchRowError
 from .inode_cache import OutOfInodesError
 from . import deltadump
-from cStringIO import StringIO
+from io import BytesIO
 from llfuse import FUSEError
-import cPickle as pickle
+import pickle
 import collections
 import errno
 import llfuse
@@ -24,6 +24,7 @@ import os
 import stat
 import struct
 import time
+from s3ql.common import PICKLE_PROTOCOL
 
 # standard logger for this module
 log = logging.getLogger("fs")
@@ -109,7 +110,7 @@ class Operations(llfuse.Operations):
         self.open_inodes[llfuse.ROOT_INODE] += 1
 
     def destroy(self):
-        self.forget(self.open_inodes.items())
+        self.forget(list(self.open_inodes.items()))
         self.inodes.destroy()
 
     def lookup(self, id_p, name):
@@ -136,7 +137,7 @@ class Operations(llfuse.Operations):
                 id_ = self.db.get_val("SELECT inode FROM contents_v WHERE name=? AND parent_inode=?",
                                       (name, id_p))
             except NoSuchRowError:
-                raise(llfuse.FUSEError(errno.ENOENT))
+                raise llfuse.FUSEError(errno.ENOENT) from None
             inode = self.inodes[id_]
 
         self.open_inodes[inode.id] += 1
@@ -164,7 +165,7 @@ class Operations(llfuse.Operations):
             return self.db.get_val("SELECT target FROM symlink_targets WHERE inode=?", (id_,))
         except NoSuchRowError:
             log.warn('Inode does not have symlink target: %d', id_)
-            raise FUSEError(errno.EINVAL)
+            raise FUSEError(errno.EINVAL) from None
 
     def opendir(self, id_):
         log.debug('opendir(%d): start', id_)
@@ -187,19 +188,18 @@ class Operations(llfuse.Operations):
         if inode.atime < inode.ctime or inode.atime < inode.mtime:
             inode.atime = time.time()
 
-        # The ResultSet is automatically deleted
-        # when yield raises GeneratorExit.  
-        res = self.db.query("SELECT name_id, name, inode FROM contents_v "
-                            'WHERE parent_inode=? AND name_id > ? ORDER BY name_id', (id_, off))
-        for (next_, name, cid_) in res:
-            yield (name, self.inodes[cid_], next_)
+        with self.db.query("SELECT name_id, name, inode FROM contents_v "
+                           'WHERE parent_inode=? AND name_id > ? ORDER BY name_id', 
+                           (id_, off)) as res:
+            for (next_, name, cid_) in res:
+                yield (name, self.inodes[cid_], next_)
 
     def getxattr(self, id_, name):
         log.debug('getxattr(%d, %r): start', id_, name)
         # Handle S3QL commands
         if id_ == CTRL_INODE:
             if name == b's3ql_pid?':
-                return bytes(os.getpid())
+                return pickle.dumps(os.getpid(), PICKLE_PROTOCOL)
 
             elif name == b's3qlstat':
                 return self.extstat()
@@ -216,14 +216,15 @@ class Operations(llfuse.Operations):
                 value = self.db.get_val('SELECT value FROM ext_attributes_v WHERE inode=? AND name=?',
                                           (id_, name))
             except NoSuchRowError:
-                raise llfuse.FUSEError(llfuse.ENOATTR)
+                raise llfuse.FUSEError(llfuse.ENOATTR) from None
             return value
 
     def listxattr(self, id_):
         log.debug('listxattr(%d): start', id_)
         names = list()
-        for (name,) in self.db.query('SELECT name FROM ext_attributes_v WHERE inode=?', (id_,)):
-            names.append(name)
+        with self.db.query('SELECT name FROM ext_attributes_v WHERE inode=?', (id_,)) as res:
+            for (name,) in res:
+                names.append(name)
         return names
 
     def setxattr(self, id_, name, value):
@@ -276,7 +277,7 @@ class Operations(llfuse.Operations):
         try:
             name_id = self._del_name(name)
         except NoSuchRowError:
-            raise llfuse.FUSEError(llfuse.ENOATTR)
+            raise llfuse.FUSEError(llfuse.ENOATTR) from None
 
         changes = self.db.execute('DELETE FROM ext_attributes WHERE inode=? AND name_id=?',
                                   (id_, name_id))
@@ -296,13 +297,14 @@ class Operations(llfuse.Operations):
         gil_step = 250 # Approx. number of steps between GIL releases
         while True:
             id_p = queue.pop()
-            for (id_,) in self.db.query('SELECT inode FROM contents WHERE parent_inode=?',
-                                        (id_p,)):
-                self.inodes[id_].locked = True
-                processed += 1
-
-                if self.db.has_val('SELECT 1 FROM contents WHERE parent_inode=?', (id_,)):
-                    queue.append(id_)
+            with self.db.query('SELECT inode FROM contents WHERE parent_inode=?',
+                               (id_p,)) as res:
+                for (id_,) in res:
+                    self.inodes[id_].locked = True
+                    processed += 1
+    
+                    if self.db.has_val('SELECT 1 FROM contents WHERE parent_inode=?', (id_,)):
+                        queue.append(id_)
 
             if not queue:
                 break
@@ -335,29 +337,30 @@ class Operations(llfuse.Operations):
         while queue: # For every directory
             found_subdirs = False # Does current directory have subdirectories?
             id_p = queue.pop()
-            for (name_id, id_) in self.db.query('SELECT name_id, inode FROM contents WHERE '
-                                                'parent_inode=?', (id_p,)):
-
-                if self.db.has_val('SELECT 1 FROM contents WHERE parent_inode=?', (id_,)):
-                    if not found_subdirs:
-                        # When current directory has subdirectories, we must reinsert
-                        # it into queue
-                        found_subdirs = True
-                        queue.append(id_p)
-                    queue.append(id_)
-
-                else:
-                    name = self.db.get_val("SELECT name FROM names WHERE id=?", (name_id,))
-                    if id_p in self.open_inodes:
-                        llfuse.invalidate_entry(id_p, name)
-                    self._remove(id_p, name, id_, force=True)
-
-                processed += 1
-                if processed > gil_step:
-                    # Also reinsert current directory if we need to yield to other threads
-                    if not found_subdirs: 
-                        queue.append(id_p)
-                    break
+            with self.db.query('SELECT name_id, inode FROM contents WHERE '
+                               'parent_inode=?', (id_p,)) as res:
+                for (name_id, id_) in res:
+    
+                    if self.db.has_val('SELECT 1 FROM contents WHERE parent_inode=?', (id_,)):
+                        if not found_subdirs:
+                            # When current directory has subdirectories, we must reinsert
+                            # it into queue
+                            found_subdirs = True
+                            queue.append(id_p)
+                        queue.append(id_)
+    
+                    else:
+                        name = self.db.get_val("SELECT name FROM names WHERE id=?", (name_id,))
+                        if id_p in self.open_inodes:
+                            llfuse.invalidate_entry(id_p, name)
+                        self._remove(id_p, name, id_, force=True)
+    
+                    processed += 1
+                    if processed > gil_step:
+                        # Also reinsert current directory if we need to yield to other threads
+                        if not found_subdirs: 
+                            queue.append(id_p)
+                        break
 
             if processed > gil_step:
                 dt = time.time() - stamp
@@ -400,7 +403,7 @@ class Operations(llfuse.Operations):
             src_inode = self.inodes[src_id]
             target_inode = self.inodes[target_id]
         except KeyError:
-            raise FUSEError(errno.ENOENT)
+            raise FUSEError(errno.ENOENT) from None
         for attr in ('atime', 'ctime', 'mtime', 'mode', 'uid', 'gid'):
             setattr(target_inode, attr, getattr(src_inode, attr))
 
@@ -419,63 +422,63 @@ class Operations(llfuse.Operations):
             (src_id, target_id, off) = queue.pop()
             log.debug('copy_tree(%d, %d): Processing directory (%d, %d, %d)',
                       src_inode.id, target_inode.id, src_id, target_id, off)
-            for (name_id, id_) in db.query('SELECT name_id, inode FROM contents '
-                                           'WHERE parent_inode=? AND name_id > ? '
-                                           'ORDER BY name_id', (src_id, off)):
-
-                if id_ not in id_cache:
-                    inode = self.inodes[id_]
-
-                    try:
-                        inode_new = make_inode(refcount=1, mode=inode.mode, size=inode.size,
-                                               uid=inode.uid, gid=inode.gid,
-                                               mtime=inode.mtime, atime=inode.atime,
-                                               ctime=inode.ctime, rdev=inode.rdev)
-                    except OutOfInodesError:
-                        log.warn('Could not find a free inode')
-                        raise FUSEError(errno.ENOSPC)
-
-                    id_new = inode_new.id
-
-                    if inode.refcount != 1:
-                        id_cache[id_] = id_new
-
-                    db.execute('INSERT INTO symlink_targets (inode, target) '
-                               'SELECT ?, target FROM symlink_targets WHERE inode=?',
-                               (id_new, id_))
-
-                    db.execute('INSERT INTO ext_attributes (inode, name_id, value) '
-                               'SELECT ?, name_id, value FROM ext_attributes WHERE inode=?',
-                               (id_new, id_))
-                    db.execute('UPDATE names SET refcount = refcount + 1 WHERE '
-                               'id IN (SELECT name_id FROM ext_attributes WHERE inode=?)',
-                               (id_,))
-
-                    processed += db.execute('INSERT INTO inode_blocks (inode, blockno, block_id) '
-                                            'SELECT ?, blockno, block_id FROM inode_blocks '
-                                            'WHERE inode=?', (id_new, id_))
-                    db.execute('REPLACE INTO blocks (id, hash, refcount, size, obj_id) '
-                               'SELECT id, hash, refcount+COUNT(id), size, obj_id '
-                               'FROM inode_blocks JOIN blocks ON block_id = id '
-                               'WHERE inode = ? GROUP BY id', (id_new,))
-
-                    if db.has_val('SELECT 1 FROM contents WHERE parent_inode=?', (id_,)):
-                        queue.append((id_, id_new, 0))
-                else:
-                    id_new = id_cache[id_]
-                    self.inodes[id_new].refcount += 1
-
-                db.execute('INSERT INTO contents (name_id, inode, parent_inode) VALUES(?, ?, ?)',
-                           (name_id, id_new, target_id))
-                db.execute('UPDATE names SET refcount=refcount+1 WHERE id=?', (name_id,))
-
-                processed += 1
-
-                if processed > gil_step:
-                    log.debug('copy_tree(%d, %d): Requeueing (%d, %d, %d) to yield lock',
-                              src_inode.id, target_inode.id, src_id, target_id, name_id)
-                    queue.append((src_id, target_id, name_id))
-                    break
+            with db.query('SELECT name_id, inode FROM contents WHERE parent_inode=? '
+                          'AND name_id > ? ORDER BY name_id', (src_id, off)) as res:
+                for (name_id, id_) in res:
+    
+                    if id_ not in id_cache:
+                        inode = self.inodes[id_]
+    
+                        try:
+                            inode_new = make_inode(refcount=1, mode=inode.mode, size=inode.size,
+                                                   uid=inode.uid, gid=inode.gid,
+                                                   mtime=inode.mtime, atime=inode.atime,
+                                                   ctime=inode.ctime, rdev=inode.rdev)
+                        except OutOfInodesError:
+                            log.warn('Could not find a free inode')
+                            raise FUSEError(errno.ENOSPC) from None
+    
+                        id_new = inode_new.id
+    
+                        if inode.refcount != 1:
+                            id_cache[id_] = id_new
+    
+                        db.execute('INSERT INTO symlink_targets (inode, target) '
+                                   'SELECT ?, target FROM symlink_targets WHERE inode=?',
+                                   (id_new, id_))
+    
+                        db.execute('INSERT INTO ext_attributes (inode, name_id, value) '
+                                   'SELECT ?, name_id, value FROM ext_attributes WHERE inode=?',
+                                   (id_new, id_))
+                        db.execute('UPDATE names SET refcount = refcount + 1 WHERE '
+                                   'id IN (SELECT name_id FROM ext_attributes WHERE inode=?)',
+                                   (id_,))
+    
+                        processed += db.execute('INSERT INTO inode_blocks (inode, blockno, block_id) '
+                                                'SELECT ?, blockno, block_id FROM inode_blocks '
+                                                'WHERE inode=?', (id_new, id_))
+                        db.execute('REPLACE INTO blocks (id, hash, refcount, size, obj_id) '
+                                   'SELECT id, hash, refcount+COUNT(id), size, obj_id '
+                                   'FROM inode_blocks JOIN blocks ON block_id = id '
+                                   'WHERE inode = ? GROUP BY id', (id_new,))
+    
+                        if db.has_val('SELECT 1 FROM contents WHERE parent_inode=?', (id_,)):
+                            queue.append((id_, id_new, 0))
+                    else:
+                        id_new = id_cache[id_]
+                        self.inodes[id_new].refcount += 1
+    
+                    db.execute('INSERT INTO contents (name_id, inode, parent_inode) VALUES(?, ?, ?)',
+                               (name_id, id_new, target_id))
+                    db.execute('UPDATE names SET refcount=refcount+1 WHERE id=?', (name_id,))
+    
+                    processed += 1
+    
+                    if processed > gil_step:
+                        log.debug('copy_tree(%d, %d): Requeueing (%d, %d, %d) to yield lock',
+                                  src_inode.id, target_inode.id, src_id, target_id, name_id)
+                        queue.append((src_id, target_id, name_id))
+                        break
 
             if processed > gil_step:
                 dt = time.time() - stamp
@@ -925,7 +928,7 @@ class Operations(llfuse.Operations):
         if name == CTRL_NAME:
             log.warn('Attempted to create s3ql control file at %s',
                      get_path(id_p, self.db, name))
-            raise llfuse.FUSEError(errno.EACCES)
+            raise FUSEError(errno.EACCES)
 
         timestamp = time.time()
         inode_p = self.inodes[id_p]
@@ -946,7 +949,7 @@ class Operations(llfuse.Operations):
                                              rdev=rdev, size=size)
         except OutOfInodesError:
             log.warn('Could not find a free inode')
-            raise FUSEError(errno.ENOSPC)
+            raise FUSEError(errno.ENOSPC) from None
 
         self.db.execute("INSERT INTO contents(name_id, inode, parent_inode) VALUES(?,?,?)",
                         (self._add_name(name), inode.id, id_p))
@@ -962,7 +965,7 @@ class Operations(llfuse.Operations):
         This method releases the global lock while it is running.
         '''
         log.debug('read(%d, %d, %d): start', fh, offset, length)
-        buf = StringIO()
+        buf = BytesIO()
         inode = self.inodes[fh]
 
         # Make sure that we don't read beyond the file size. This

@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 '''
 sphinx_pipe.py - this file is part of S3QL (http://s3ql.googlecode.com)
 
@@ -35,13 +34,13 @@ class PipeInclude(Include):
 
         try:
             child = subprocess.Popen(shlex.split(command), stdout=subprocess.PIPE,
-                                     cwd=source_dir)
+                                     cwd=source_dir, universal_newlines=True)
             include_file = io.FileInput(
                 source=child.stdout, encoding=encoding,
                 error_handler=(self.state.document.settings.\
                                input_encoding_error_handler),
                 handle_io_errors=None)
-        except IOError, error:
+        except IOError as error:
             raise self.severe('Problems with "%s" directive path:\n%s: %s.' %
                         (self.name, error.__class__.__name__, str(error)))
             # Hack: Since Python 2.6, the string interpolation returns a
@@ -58,7 +57,7 @@ class PipeInclude(Include):
                 include_text = ''.join(include_lines[startline:endline])
             else:
                 include_text = include_file.read()
-        except UnicodeError, error:
+        except UnicodeError as error:
             raise self.severe(
                 'Problem with "%s" directive:\n%s: %s'
                 % (self.name, error.__class__.__name__, error))

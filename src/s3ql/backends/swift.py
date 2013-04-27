@@ -6,20 +6,18 @@ Copyright (C) Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
+
 from ..common import QuietError, BUFSIZE
 from .common import (AbstractBackend, NoSuchObject, retry, AuthorizationError, http_connection, 
-    DanglingStorageURLError)
+    DanglingStorageURLError, is_temp_network_error)
 from .s3c import HTTPError, BadDigestError
-from s3ql.backends.common import is_temp_network_error
-from urlparse import urlsplit
-import hashlib
+from . import s3c
+from urllib.parse import urlsplit
 import json
 import logging
 import re
-import tempfile
 import time
-import urllib
+import urllib.parse
 
 log = logging.getLogger("backend.swift")
 
@@ -58,7 +56,7 @@ class Backend(AbstractBackend):
             resp = self._do_request('GET', '/', query_string={'limit': 1 })
         except HTTPError as exc:
             if exc.status == 404:
-                raise DanglingStorageURLError(self.container_name)
+                raise DanglingStorageURLError(self.container_name) from None
             raise
         resp.read()   
                     
@@ -97,7 +95,7 @@ class Backend(AbstractBackend):
         problems and so that the request can be manually restarted if applicable.
         '''
 
-        if isinstance(exc, (AuthenticationExpired,)):
+        if isinstance(exc, AuthenticationExpired):
             return True
 
         elif isinstance(exc, HTTPError) and exc.status >= 500 and exc.status <= 599:
@@ -137,7 +135,7 @@ class Backend(AbstractBackend):
             #pylint: disable=E1103                
             self.auth_token = resp.getheader('X-Auth-Token')
             o = urlsplit(resp.getheader('X-Storage-Url'))
-            self.auth_prefix = urllib.unquote(o.path)
+            self.auth_prefix = urllib.parse.unquote(o.path)
             conn.close()
 
             return http_connection(o.hostname, o.port, ssl=True)
@@ -165,9 +163,9 @@ class Backend(AbstractBackend):
             self.conn =  self._get_conn()
                         
         # Construct full path
-        path = urllib.quote('%s/%s%s' % (self.auth_prefix, self.container_name, path))
+        path = urllib.parse.quote('%s/%s%s' % (self.auth_prefix, self.container_name, path))
         if query_string:
-            s = urllib.urlencode(query_string, doseq=True)
+            s = urllib.parse.urlencode(query_string, doseq=True)
             if subres:
                 path += '?%s&%s' % (subres, s)
             else:
@@ -224,7 +222,7 @@ class Backend(AbstractBackend):
             assert resp.length == 0
         except HTTPError as exc:
             if exc.status == 404:
-                raise NoSuchObject(key)
+                raise NoSuchObject(key) from None
             else:
                 raise
 
@@ -241,7 +239,7 @@ class Backend(AbstractBackend):
             assert resp.length == 0
         except HTTPError as exc:
             if exc.status == 404:
-                raise NoSuchObject(key)
+                raise NoSuchObject(key) from None
             else:
                 raise
 
@@ -263,7 +261,7 @@ class Backend(AbstractBackend):
             resp = self._do_request('GET', '/%s%s' % (self.prefix, key))
         except HTTPError as exc:
             if exc.status == 404:
-                raise NoSuchObject(key)
+                raise NoSuchObject(key) from None
             raise
 
         return ObjectR(key, resp, self, extractmeta(resp))
@@ -284,7 +282,7 @@ class Backend(AbstractBackend):
 
         headers = dict()
         if metadata:
-            for (hdr, val) in metadata.iteritems():
+            for (hdr, val) in metadata.items():
                 headers['X-Object-Meta-%s' % hdr] = val
 
         return ObjectW(key, self, headers)
@@ -317,7 +315,7 @@ class Backend(AbstractBackend):
             assert resp.length == 0
         except HTTPError as exc:
             if exc.status == 404 and not force:
-                raise NoSuchObject(key)
+                raise NoSuchObject(key) from None
             elif exc.status != 404:
                 raise
 
@@ -339,7 +337,7 @@ class Backend(AbstractBackend):
             resp.read()
         except HTTPError as exc:
             if exc.status == 404:
-                raise NoSuchObject(src)
+                raise NoSuchObject(src) from None
             raise
 
     def list(self, prefix=''):
@@ -357,7 +355,7 @@ class Backend(AbstractBackend):
         iterator = self._list(prefix, marker)
         while True:
             try:
-                marker = iterator.next()
+                marker = next(iterator)
                 waited = 0
             except StopIteration:
                 break
@@ -404,7 +402,7 @@ class Backend(AbstractBackend):
                                                                   'limit': batch_size })
             except HTTPError as exc:
                 if exc.status == 404:
-                    raise DanglingStorageURLError(self.container_name)
+                    raise DanglingStorageURLError(self.container_name) from None
                 raise
             
             if resp.status == 204:
@@ -424,41 +422,19 @@ class Backend(AbstractBackend):
                 # Need to read rest of response
                 while True:
                     buf = resp.read(BUFSIZE)
-                    if buf == '':
+                    if buf == b'':
                         break
                 break
             
             keys_remaining = count == batch_size 
 
             
-class ObjectW(object):
+class ObjectW(s3c.ObjectW):
     '''A SWIFT object open for writing
     
     All data is first cached in memory, upload only starts when
     the close() method is called.
     '''
-
-    def __init__(self, key, backend, headers):
-        self.key = key
-        self.backend = backend
-        self.headers = headers
-        self.closed = False
-        self.obj_size = 0
-        self.fh = tempfile.TemporaryFile(bufsize=0) # no Python buffering
-
-        # False positive, hashlib *does* have md5 member
-        #pylint: disable=E1101        
-        self.md5 = hashlib.md5()
-
-    def write(self, buf):
-        '''Write object data'''
-
-        self.fh.write(buf)
-        self.md5.update(buf)
-        self.obj_size += len(buf)
-
-    def is_temp_failure(self, exc):
-        return self.backend.is_temp_failure(exc)
 
     @retry
     def close(self):
@@ -489,85 +465,12 @@ class ObjectW(object):
                               self.key)            
             raise BadDigestError('BadDigest', 'Received ETag does not agree with our calculations.')
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        self.close()
-        return False
-
-    def get_obj_size(self):
-        if not self.closed:
-            raise RuntimeError('Object must be closed first.')
-        return self.obj_size   
     
-class ObjectR(object):
+class ObjectR(s3c.ObjectR):
     '''A SWIFT object opened for reading'''
 
-    def __init__(self, key, resp, backend, metadata=None):
-        self.key = key
-        self.resp = resp
-        self.md5_checked = False
-        self.backend = backend
-        self.metadata = metadata
+    pass
 
-        # False positive, hashlib *does* have md5 member
-        #pylint: disable=E1101        
-        self.md5 = hashlib.md5()
-
-    def read(self, size=None):
-        '''Read object data
-        
-        For integrity checking to work, this method has to be called until
-        it returns an empty string, indicating that all data has been read
-        (and verified).
-        '''
-
-        # chunked encoding handled by httplib
-        buf = self.resp.read(size)
-
-        # Check MD5 on EOF
-        if not buf and not self.md5_checked:
-            etag = self.resp.getheader('ETag').strip('"')
-            self.md5_checked = True
-            
-            # Apparently sometimes the response is not closed even when all data has been read. In
-            # that case, the next request can still be send, but an attempt to retrieve the next
-            # response will result in an ResponseNotReady() exception:
-            # http://code.google.com/p/s3ql/issues/detail?id=358
-            # This code attempts to produce additional debug information when that happens,
-            # so that we can figure out what exactly is going wrong.
-            if not self.resp.isclosed():
-                log.error('ObjectR.read(): response not closed after end of data, '
-                          'please report on http://code.google.com/p/s3ql/issues/')
-                log.error('Method: %s, chunked: %s, read length: %s '
-                          'response length: %s, chunk_left: %s, status: %d '
-                          'reason "%s", version: %s, will_close: %s',
-                          self.resp._method, self.resp.chunked, size, self.resp.length,
-                          self.resp.chunk_left, self.resp.status, self.resp.reason,
-                          self.resp.version, self.resp.will_close)                
-                self.resp.close() 
-                            
-            if etag != self.md5.hexdigest():
-                log.warn('ObjectR(%s).close(): MD5 mismatch: %s vs %s', self.key, etag,
-                         self.md5.hexdigest())
-                raise BadDigestError('BadDigest', 'ETag header does not agree with calculated MD5')
-            return buf
-
-        self.md5.update(buf)
-        return buf
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def close(self):
-        '''Close object'''
-
-        pass    
-    
     
 def extractmeta(resp):
     '''Extract metadata from HTTP response object'''

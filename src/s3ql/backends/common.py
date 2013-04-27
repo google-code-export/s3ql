@@ -6,23 +6,23 @@ Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-from ..common import QuietError, BUFSIZE
-from abc import ABCMeta, abstractmethod
+
+from ..common import QuietError, BUFSIZE, PICKLE_PROTOCOL
+from abc import abstractmethod, ABCMeta
 from base64 import b64decode, b64encode
-from cStringIO import StringIO
+from io import BytesIO
 from contextlib import contextmanager
 from functools import wraps
 from getpass import getpass
-from pycryptopp.cipher import aes
+from Crypto.Cipher import AES
+from Crypto.Util import Counter
 from s3ql.common import ChecksumError
-import ConfigParser
+import configparser
 import bz2
-import cPickle as pickle
-import errno
+import pickle
 import hashlib
 import hmac
-import httplib
+import http.client
 import logging
 import lzma
 import math
@@ -35,10 +35,6 @@ import sys
 import threading
 import time
 import zlib
-
-# Not available in every pycryptopp version
-if hasattr(aes, 'start_up_self_test'):
-    aes.start_up_self_test()
 
 log = logging.getLogger("backend")
 
@@ -94,17 +90,13 @@ True.
 def is_temp_network_error(exc):
     '''Return true if *exc* represents a potentially temporary network problem'''
 
-    if isinstance(exc, (httplib.IncompleteRead, socket.timeout)):
+    if isinstance(exc, (http.client.IncompleteRead, socket.timeout,
+                        ConnectionError, TimeoutError, InterruptedError)):
         return True
      
     # Server closed connection
-    elif (isinstance(exc, httplib.BadStatusLine)
+    elif (isinstance(exc, http.client.BadStatusLine)
           and (not exc.line or exc.line == "''")):
-        return True
-
-    elif (isinstance(exc, IOError) and
-          exc.errno in (errno.EPIPE, errno.ECONNRESET, errno.ETIMEDOUT,
-                        errno.EINTR)):
         return True
 
     # Formally this is a permanent error. However, it may also indicate
@@ -144,16 +136,16 @@ def http_connection(hostname, port, ssl=False):
         log.info('Using proxy %s:%d', proxy_host, proxy_port)
         
         if ssl:
-            conn = httplib.HTTPSConnection(proxy_host, proxy_port)
+            conn = http.client.HTTPSConnection(proxy_host, proxy_port)
         else:
-            conn = httplib.HTTPConnection(proxy_host, proxy_port)
+            conn = http.client.HTTPConnection(proxy_host, proxy_port)
         conn.set_tunnel(hostname, port)
         return conn
     
     elif ssl:
-        return httplib.HTTPSConnection(hostname, port)
+        return http.client.HTTPSConnection(hostname, port)
     else:
-        return httplib.HTTPConnection(hostname, port)
+        return http.client.HTTPConnection(hostname, port)
     
 def sha256(s):
     return hashlib.sha256(s).digest()
@@ -203,7 +195,7 @@ class BackendPool(object):
             self.push_conn(conn)
 
 
-class AbstractBackend(object):
+class AbstractBackend(object, metaclass=ABCMeta):
     '''Functionality shared between all backends.
     
     Instances behave similarly to dicts. They can be iterated over and
@@ -213,7 +205,6 @@ class AbstractBackend(object):
     object will be immediately retrievable. Additional consistency guarantees
     may or may not be available and can be queried for with instance methods.
     '''
-    __metaclass__ = ABCMeta
 
     needs_login = True
 
@@ -405,6 +396,8 @@ class BetterBackend(AbstractBackend):
     def __init__(self, passphrase, compression, backend):
         super(BetterBackend, self).__init__()
 
+        assert passphrase is None or isinstance(passphrase, (bytes, bytearray, memoryview))
+        
         self.passphrase = passphrase
         self.compression = compression
         self.backend = backend
@@ -461,9 +454,9 @@ class BetterBackend(AbstractBackend):
         elif not encrypted and self.passphrase:
             raise ObjectNotEncrypted()
 
-        buf = b64decode(''.join(metadata[k] 
-                                for k in sorted(metadata.keys()) 
-                                if k.startswith('meta')))
+        buf = b64decode(b''.join(metadata[k] 
+                                 for k in sorted(metadata.keys()) 
+                                 if k.startswith('meta')))
         if encrypted:
             buf = decrypt(buf, self.passphrase)
 
@@ -472,7 +465,7 @@ class BetterBackend(AbstractBackend):
         except pickle.UnpicklingError as exc:
             if (isinstance(exc.args[0], str)
                 and exc.args[0].startswith('invalid load key')):
-                raise ChecksumError('Invalid metadata')
+                raise ChecksumError('Invalid metadata') from None
             raise
 
         if metadata is None:
@@ -541,13 +534,13 @@ class BetterBackend(AbstractBackend):
 
         # We always store metadata (even if it's just None), so that we can
         # verify that the object has been created by us when we call lookup().
-        meta_buf = pickle.dumps(metadata, 2)
+        meta_buf = pickle.dumps(metadata, PICKLE_PROTOCOL)
 
         meta_raw = dict()
 
         if self.passphrase:
             meta_raw['encryption'] = 'AES_v2'
-            nonce = struct.pack(b'<f', time.time()) + bytes(key)
+            nonce = struct.pack('<f', time.time()) + key.encode('utf-8')
             meta_buf = b64encode(encrypt(meta_buf, self.passphrase, nonce))
         else:
             meta_raw['encryption'] = 'None'
@@ -570,7 +563,7 @@ class BetterBackend(AbstractBackend):
             compr = bz2.BZ2Compressor(9)
             meta_raw['compression'] = 'BZIP2'
         elif self.compression == 'lzma':
-            compr = lzma.LZMACompressor(options={ 'level': 7 })
+            compr = lzma.LZMACompressor(preset=7)
             meta_raw['compression'] = 'LZMA'
 
         fh = self.backend.open_write(key, meta_raw)
@@ -622,14 +615,12 @@ class BetterBackend(AbstractBackend):
         return self.backend.rename(src, dest)
 
 
-class AbstractInputFilter(object):
+class AbstractInputFilter(object, metaclass=ABCMeta):
     '''Process data while reading'''
-
-    __metaclass__ = ABCMeta
 
     def __init__(self):
         super(AbstractInputFilter, self).__init__()
-        self.buffer = ''
+        self.buffer = b''
 
     def read(self, size=None):
         '''Try to read *size* bytes
@@ -651,7 +642,7 @@ class AbstractInputFilter(object):
 
         if size is None:
             buf = self.buffer
-            self.buffer = ''
+            self.buffer = b''
         else:
             buf = self.buffer[:size]
             self.buffer = self.buffer[size:]
@@ -725,29 +716,29 @@ class DecompressFilter(AbstractInputFilter):
     def _read(self, size):
         '''Read roughly *size* bytes'''
 
-        buf = ''
+        buf = b''
         while not buf:
             buf = self.fh.read(size)
             if not buf:
                 if self.decomp.unused_data:
                     raise ChecksumError('Data after end of compressed stream')
-                return ''
+                return b''
 
             try:
                 buf = self.decomp.decompress(buf)
             except IOError as exc:
                 if exc.args == ('invalid data stream',):
-                    raise ChecksumError('Invalid compressed stream')
+                    raise ChecksumError('Invalid compressed stream') from None
                 raise
-            except lzma.error as exc:
-                if exc.args == ('unknown file format',):
-                    raise ChecksumError('Invalid compressed stream')
+            except lzma.LZMAError as exc:
+                if exc.args == ('Corrupt input data',):
+                    raise ChecksumError('Invalid compressed stream') from None
                 raise
             except zlib.error as exc:
                 if exc.args[0].startswith('Error -3 while decompressing:'):
                     log.warn('LegacyDecryptDecompressFilter._read(): %s',
                              exc.args[0])
-                    raise ChecksumError('Invalid compressed stream')
+                    raise ChecksumError('Invalid compressed stream') from None
                 raise
 
         return buf
@@ -776,11 +767,8 @@ class EncryptFilter(object):
         self.obj_size = 0
         self.closed = False
 
-        if isinstance(nonce, unicode):
-            nonce = nonce.encode('utf-8')
-
         self.key = sha256(passphrase + nonce)
-        self.cipher = aes.AES(self.key) #IGNORE:E1102
+        self.cipher = aes_cipher(self.key)
         self.hmac = hmac.new(self.key, digestmod=hashlib.sha256)
 
         self.fh.write(struct.pack(b'<B', len(nonce)))
@@ -804,7 +792,7 @@ class EncryptFilter(object):
 
         buf = struct.pack(b'<I', len(data)) + data
         self.hmac.update(buf)
-        buf = self.cipher.process(buf)
+        buf = self.cipher.encrypt(buf)
         if buf:
             self.fh.write(buf)
             self.obj_size += len(buf)
@@ -813,7 +801,7 @@ class EncryptFilter(object):
         # Packet length of 0 indicates end of stream, only HMAC follows
         buf = struct.pack(b'<I', 0)
         self.hmac.update(buf)
-        buf = self.cipher.process(buf + self.hmac.digest())
+        buf = self.cipher.encrypt(buf + self.hmac.digest())
         self.fh.write(buf)
         self.obj_size += len(buf)
         self.fh.close()
@@ -857,7 +845,7 @@ class DecryptFilter(AbstractInputFilter):
         nonce = fh.read(len_)
 
         key = sha256(passphrase + nonce)
-        self.cipher = aes.AES(key) #IGNORE:E1102
+        self.cipher = aes_cipher(key)
         self.hmac = hmac.new(key, digestmod=hashlib.sha256)
 
     def _read(self, size):
@@ -867,10 +855,10 @@ class DecryptFilter(AbstractInputFilter):
         if not buf:
             if not self.hmac_checked:
                 raise ChecksumError('HMAC mismatch')
-            return ''
+            return b''
 
-        inbuf = self.cipher.process(buf)
-        outbuf = ''
+        inbuf = self.cipher.decrypt(buf)
+        outbuf = b''
         while True:
 
             if len(inbuf) <= self.remaining:
@@ -892,8 +880,8 @@ class DecryptFilter(AbstractInputFilter):
             # End of file, read and check HMAC
             if paket_size == 0:
                 if len(inbuf) != HMAC_SIZE:
-                    inbuf += self.cipher.process(self.fh.read(HMAC_SIZE - len(inbuf)))
-                if inbuf != self.hmac.digest():
+                    inbuf += self.cipher.decrypt(self.fh.read(HMAC_SIZE - len(inbuf)))
+                if not hmac.compare_digest(inbuf, self.hmac.digest()):
                     raise ChecksumError('HMAC mismatch')
                 self.hmac_checked = True
                 break
@@ -935,7 +923,7 @@ class LegacyDecryptDecompressFilter(AbstractInputFilter):
         self.hash = fh.read(HMAC_SIZE)
 
         key = sha256(passphrase + nonce)
-        self.cipher = aes.AES(key) #IGNORE:E1102
+        self.cipher = aes_cipher(key)
         self.hmac = hmac.new(key, digestmod=hashlib.sha256)
 
     def _read(self, size):
@@ -945,17 +933,18 @@ class LegacyDecryptDecompressFilter(AbstractInputFilter):
         while not buf:
             buf = self.fh.read(size)
             if not buf and not self.hmac_checked:
-                if self.cipher.process(self.hash) != self.hmac.digest():
+                if not hmac.compare_digest(self.cipher.decrypt(self.hash), 
+                                           self.hmac.digest()):
                     raise ChecksumError('HMAC mismatch')
                 elif self.decomp and self.decomp.unused_data:
                     raise ChecksumError('Data after end of compressed stream')
                 else:
                     self.hmac_checked = True
-                    return ''
+                    return b''
             elif not buf:
-                return ''
+                return b''
 
-            buf = self.cipher.process(buf)
+            buf = self.cipher.decrypt(buf)
             if not self.decomp:
                 break
 
@@ -963,17 +952,17 @@ class LegacyDecryptDecompressFilter(AbstractInputFilter):
                 buf = self.decomp.decompress(buf)
             except IOError as exc:
                 if exc.args == ('invalid data stream',):
-                    raise ChecksumError('Invalid compressed stream')
+                    raise ChecksumError('Invalid compressed stream') from None
                 raise
-            except lzma.error as exc:
-                if exc.args == ('unknown file format',):
-                    raise ChecksumError('Invalid compressed stream')
+            except lzma.LZMAError as exc:
+                if exc.args == ('Corrupt input data',):
+                    raise ChecksumError('Invalid compressed stream') from None
                 raise
             except zlib.error as exc:
                 if exc.args[0].startswith('Error -3 while decompressing:'):
                     log.warn('LegacyDecryptDecompressFilter._read(): %s',
                              exc.args[0])
-                    raise ChecksumError('Invalid compressed stream')
+                    raise ChecksumError('Invalid compressed stream') from None
                 raise
 
         self.hmac.update(buf)
@@ -988,20 +977,17 @@ class LegacyDecryptDecompressFilter(AbstractInputFilter):
     def __exit__(self, *a):
         self.close()
         return False
-
+    
 def encrypt(buf, passphrase, nonce):
     '''Encrypt *buf*'''
 
-    if isinstance(nonce, unicode):
-        nonce = nonce.encode('utf-8')
-
     key = sha256(passphrase + nonce)
-    cipher = aes.AES(key) #IGNORE:E1102
+    cipher = aes_cipher(key) 
     hmac_ = hmac.new(key, digestmod=hashlib.sha256)
 
     hmac_.update(buf)
-    buf = cipher.process(buf)
-    hash_ = cipher.process(hmac_.digest())
+    buf = cipher.encrypt(buf)
+    hash_ = cipher.encrypt(hmac_.digest())
 
     return b''.join(
                     (struct.pack(b'<B', len(nonce)),
@@ -1010,25 +996,25 @@ def encrypt(buf, passphrase, nonce):
 def decrypt(buf, passphrase):
     '''Decrypt *buf'''
 
-    fh = StringIO(buf)
+    fh = BytesIO(buf)
 
     len_ = struct.unpack(b'<B', fh.read(struct.calcsize(b'<B')))[0]
     nonce = fh.read(len_)
 
     key = sha256(passphrase + nonce)
-    cipher = aes.AES(key) #IGNORE:E1102
+    cipher = aes_cipher(key) 
     hmac_ = hmac.new(key, digestmod=hashlib.sha256)
 
     # Read (encrypted) hmac
     hash_ = fh.read(HMAC_SIZE)
 
     buf = fh.read()
-    buf = cipher.process(buf)
+    buf = cipher.decrypt(buf)
     hmac_.update(buf)
 
-    hash_ = cipher.process(hash_)
+    hash_ = cipher.decrypt(hash_)
 
-    if hash_ != hmac_.digest():
+    if not hmac.compare_digest(hash_, hmac_.digest()):
         raise ChecksumError('HMAC mismatch')
 
     return buf
@@ -1085,7 +1071,13 @@ class AuthenticationError(Exception):
 
     def __str__(self):
         return 'Access denied. Server said: %s' % self.msg
+   
+def aes_cipher(key):
+    '''Return AES cipher in CTR mode for *key*'''
     
+    return AES.new(key, AES.MODE_CTR, 
+                   counter=Counter.new(128, initial_value=0)) 
+        
 def convert_legacy_metadata(meta):
     if ('encryption' in meta and
         'compression' in meta):
@@ -1147,12 +1139,12 @@ def get_backend_factory(options, plain=False):
     try:
         __import__(backend_name)
     except ImportError:
-        raise QuietError('No such backend: %s' % hit.group(1))
+        raise QuietError('No such backend: %s' % hit.group(1)) from None
 
     backend_class = getattr(sys.modules[backend_name], 'Backend')
 
     # Read authfile
-    config = ConfigParser.SafeConfigParser()
+    config = configparser.ConfigParser()
     if os.path.isfile(options.authfile):
         mode = os.stat(options.authfile).st_mode
         if mode & (stat.S_IRGRP | stat.S_IROTH):
@@ -1166,7 +1158,7 @@ def get_backend_factory(options, plain=False):
         def getopt(name):
             try:
                 return config.get(section, name)
-            except ConfigParser.NoOptionError:
+            except configparser.NoOptionError:
                 return None
 
         pattern = getopt('storage-url')
@@ -1204,13 +1196,13 @@ def get_backend_factory(options, plain=False):
         _ = backend['s3ql_passphrase']
         
     except DanglingStorageURLError as exc:
-        raise QuietError(str(exc))   
+        raise QuietError(str(exc)) from None
     
     except AuthorizationError:
-        raise QuietError('No permission to access backend.')
+        raise QuietError('No permission to access backend.') from None
 
     except AuthenticationError:
-        raise QuietError('Invalid credentials or skewed system clock.')
+        raise QuietError('Invalid credentials or skewed system clock.') from None
         
     except NoSuchObject:
         encrypted = False
@@ -1227,6 +1219,7 @@ def get_backend_factory(options, plain=False):
             backend_passphrase = getpass("Enter file system encryption passphrase: ")
         else:
             backend_passphrase = sys.stdin.readline().rstrip()
+        backend_passphrase = backend_passphrase.encode('utf-8')
     elif not encrypted:
         backend_passphrase = None
 
@@ -1245,7 +1238,7 @@ def get_backend_factory(options, plain=False):
     try:
         data_pw = tmp_backend['s3ql_passphrase']
     except ChecksumError:
-        raise QuietError('Wrong backend passphrase')
+        raise QuietError('Wrong backend passphrase') from None
 
     return lambda: BetterBackend(data_pw, compress,
                                 backend_class(options.storage_url, backend_login, backend_pw,

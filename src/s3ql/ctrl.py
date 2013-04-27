@@ -6,13 +6,12 @@ Copyright (C) 2010 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-from .common import CTRL_NAME, QuietError, setup_logging
+
+from .common import setup_logging, assert_fs_owner, PICKLE_PROTOCOL
 from .parse_args import ArgumentParser
-import cPickle as pickle
+import pickle
 import llfuse
 import logging
-import os
 import sys
 import textwrap
 
@@ -88,16 +87,7 @@ def main(args=None):
 
     path = options.mountpoint
 
-    if not os.path.exists(path):
-        raise QuietError('Mountpoint %r does not exist' % path)
-
-    ctrlfile = os.path.join(path, CTRL_NAME)
-    if not (CTRL_NAME not in llfuse.listdir(path)
-            and os.path.exists(ctrlfile)):
-        raise QuietError('Mountpoint is not an S3QL file system')
-
-    if os.stat(ctrlfile).st_uid != os.geteuid() and os.geteuid() != 0:
-        raise QuietError('Only root and the mounting user may run s3qlctrl.')
+    ctrlfile = assert_fs_owner(path, mountpoint=True)
 
     if options.action == 'flushcache':
         llfuse.setxattr(ctrlfile, 's3ql_flushcache!', 'dummy')
@@ -108,10 +98,11 @@ def main(args=None):
     elif options.action == 'log':
         llfuse.setxattr(ctrlfile, 'logging',
                       pickle.dumps((options.level, options.modules),
-                                   pickle.HIGHEST_PROTOCOL))
+                                   PICKLE_PROTOCOL))
 
     elif options.action == 'cachesize':
-        llfuse.setxattr(ctrlfile, 'cachesize', pickle.dumps(options.cachesize * 1024))
+        llfuse.setxattr(ctrlfile, 'cachesize', 
+                        pickle.dumps(options.cachesize * 1024, PICKLE_PROTOCOL))
 
 
 

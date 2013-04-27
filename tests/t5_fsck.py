@@ -6,31 +6,19 @@ Copyright (C) Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-
 from s3ql.common import get_backend_cachedir
 from s3ql.database import Connection
-import errno
-import os.path
+from t4_fuse import populate_dir, skip_without_rsync
 import shutil
 import subprocess
 import t4_fuse
-from t4_fuse import populate_dir
 import tempfile
-import unittest2 as unittest
+import unittest
 
 class FsckTests(t4_fuse.fuse_tests):
 
     def runTest(self):
-        try:
-            subprocess.call(['rsync', '--version'],
-                            stderr=subprocess.STDOUT,
-                            stdout=open('/dev/null', 'wb'))
-        except OSError as exc:
-            if exc.errno == errno.ENOENT:
-                raise unittest.SkipTest('rsync not installed')
-            raise
-
+        skip_without_rsync()
         ref_dir = tempfile.mkdtemp()
         try:
             populate_dir(ref_dir)
@@ -39,7 +27,7 @@ class FsckTests(t4_fuse.fuse_tests):
             self.mkfs()
             db = Connection(get_backend_cachedir(self.storage_url, self.cache_dir) + '.db')
             db.execute('UPDATE sqlite_sequence SET seq=? WHERE name=?',
-                       (2 ** 31 + 10, u'inodes'))
+                       (2 ** 31 + 10, 'inodes'))
             db.close()
 
             # Copy source data
@@ -50,7 +38,7 @@ class FsckTests(t4_fuse.fuse_tests):
 
             # Check that inode watermark is high
             db = Connection(get_backend_cachedir(self.storage_url, self.cache_dir) + '.db')
-            self.assertGreater(db.get_val('SELECT seq FROM sqlite_sequence WHERE name=?', (u'inodes',)), 2 ** 31 + 10)
+            self.assertGreater(db.get_val('SELECT seq FROM sqlite_sequence WHERE name=?', ('inodes',)), 2 ** 31 + 10)
             self.assertGreater(db.get_val('SELECT MAX(id) FROM inodes'), 2 ** 31 + 10)
             db.close()
 
@@ -59,7 +47,7 @@ class FsckTests(t4_fuse.fuse_tests):
 
             # Check if renumbering was done
             db = Connection(get_backend_cachedir(self.storage_url, self.cache_dir) + '.db')
-            self.assertLess(db.get_val('SELECT seq FROM sqlite_sequence WHERE name=?', (u'inodes',)), 2 ** 31)
+            self.assertLess(db.get_val('SELECT seq FROM sqlite_sequence WHERE name=?', ('inodes',)), 2 ** 31)
             self.assertLess(db.get_val('SELECT MAX(id) FROM inodes'), 2 ** 31)
             db.close()
 
@@ -68,7 +56,7 @@ class FsckTests(t4_fuse.fuse_tests):
             rsync = subprocess.Popen(['rsync', '-anciHAX', '--delete',
                                       '--exclude', '/lost+found',
                                       ref_dir + '/', self.mnt_dir + '/'],
-                                     stdout=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, universal_newlines=True,
                                      stderr=subprocess.STDOUT)
             out = rsync.communicate()[0]
             if out:

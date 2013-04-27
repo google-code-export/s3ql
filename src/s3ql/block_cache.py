@@ -6,11 +6,11 @@ Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
+
 from .common import sha256_fh, BUFSIZE, QuietError
 from .database import NoSuchRowError
-from .ordered_dict import OrderedDict
-from Queue import Queue
+from collections import OrderedDict
+from queue import Queue
 from contextlib import contextmanager
 from llfuse import lock, lock_released
 import logging
@@ -548,7 +548,7 @@ class BlockCache(object):
                     except NoSuchObject:
                         raise QuietError('Backend claims that object %d does not exist, data '
                                          'may be corrupted or inconsisten. fsck required.'
-                                         % obj_id)
+                                         % obj_id) from None
                         
                     except:
                         if el is not None:
@@ -562,7 +562,7 @@ class BlockCache(object):
             # In Cache
             else:
                 #log.debug('get(inode=%d, block=%d): in cache', inode, blockno)
-                self.entries.to_head((inode, blockno))
+                self.entries.move_to_end((inode, blockno), last=True) # move to head
 
         el.last_access = time.time()
         oldsize = el.size
@@ -597,7 +597,7 @@ class BlockCache(object):
             need_entries = len(self.entries) - self.max_entries
 
             # Try to expire entries that are not dirty
-            for el in self.entries.values_rev():
+            for el in self.entries():
                 if el.dirty:
                     if (el.inode, el.blockno) in self.in_transit:
                         log.debug('expire: %s is dirty, but already being uploaded', el)
@@ -621,7 +621,7 @@ class BlockCache(object):
                 break
 
             # Try to upload just enough
-            for el in self.entries.values_rev():
+            for el in self.entries:
                 if el.dirty and (el.inode, el.blockno) not in self.in_transit:
                     log.debug('expire: uploading %s..', el)
                     freed = self.upload(el) # Releases global lock
@@ -746,12 +746,12 @@ class BlockCache(object):
         This method releases the global lock.
         """
 
-        for el in self.entries.itervalues():
+        for el in self.entries.values():
             if not (el.dirty and (el.inode, el.blockno) not in self.in_transit):
                 continue
 
             self.upload(el) # Releases global lock
-
+            
     def clear(self):
         """Clear cache
         

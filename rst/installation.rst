@@ -33,12 +33,16 @@ that is not the case.
   so under Linux you should actually use *2.6.26 or newer whenever
   possible*.
 
-* `Python <http://www.python.org/>`_ 2.7.0 or newer (but not Python
-  3.x). Make sure to also install the development headers.
+* `Python <http://www.python.org/>`_ 3.3.0 or newer. Make sure to also
+  install the development headers.
 
-* The `PyCrypto++ Python Module
-  <http://pypi.python.org/pypi/pycryptopp>`_. To check if this module
-  is installed, try to execute `python -c 'import pycryptopp'`. 
+* The `setuptools/distribute Python Module
+  <https://pypi.python.org/pypi/distribute>`_. To check if this
+  module is installed, try to execute `python -c 'import setuptools'`.
+
+* The `PyCrypto Python Module
+  <https://www.dlitz.net/software/pycrypto/>`_. To check if this
+  module is installed, try to execute `python -c 'import Crypto'`.
   
 * `SQLite <http://www.sqlite.org/>`_ version 3.7.0 or newer. SQLite
   has to be installed as a *shared library* with development headers.
@@ -53,12 +57,6 @@ that is not the case.
   the Ubuntu PPA at
   https://launchpad.net/~ubuntu-rogerbinns/+archive/apsw (these
   packages are statically linked).
-
-* The `PyLibLZMA Python module
-  <http://pypi.python.org/pypi/pyliblzma>`_. To check if this module
-  is installed, execute `python -c 'import lzma; print
-  lzma.__version__'`. This should print a version number. You need at
-  least version 0.5.3.
 
 * The `Python LLFUSE module
   <http://code.google.com/p/python-llfuse/>`_. To check if this module
@@ -75,8 +73,8 @@ To install S3QL itself, proceed as follows:
 
 1. Download S3QL from http://code.google.com/p/s3ql/downloads/list
 2. Unpack it into a folder of your choice
-3. Run `python setup.py build` to build S3QL.
-4. Run `python setup.py test` to run a self-test. If this fails, ask
+3. Run `python setup.py build --inplace` to build S3QL.
+4. Run `python runtests.py tests` to run a self-test. If this fails, ask
    for help on the `mailing list
    <http://groups.google.com/group/s3ql>`_ or report a bug in the
    `issue tracker <http://code.google.com/p/s3ql/issues/list>`_.
@@ -98,8 +96,8 @@ Development Version
 
 If you have checked out the unstable development version from the
 Mercurial repository, a bit more effort is required. You need to also
-have Cython_ (0.16 or newer) and Sphinx_ (1.1 or newer) installed, and
-the necessary commands are::
+have Cython_ (0.16 or newer), Sphinx_ (1.1 or newer) and `py.test`_
+installed, and the necessary commands are::
 
   python setup.py build_cython
   python setup.py build_ext --inplace
@@ -110,3 +108,4 @@ the necessary commands are::
 
 .. _Cython: http://www.cython.org/
 .. _Sphinx: http://sphinx.pocoo.org/
+.. _py.test: http://pytest.org/

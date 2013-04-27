@@ -6,17 +6,15 @@ Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-
 from s3ql.backends import local, s3, gs, s3c, swift
 from s3ql.backends.common import (ChecksumError, ObjectNotEncrypted, NoSuchObject,
     BetterBackend)
-import ConfigParser
+import configparser
 import os
 import stat
 import tempfile
 import time
-import unittest2 as unittest
+import unittest
 
 class BackendTestsMixin(object):
 
@@ -25,9 +23,12 @@ class BackendTestsMixin(object):
         # Include special characters
         return "s3ql_=/_%d" % self.name_cnt
 
+    def newvalue(self):
+        return self.newname().encode()
+    
     def test_write(self):
         key = self.newname()
-        value = self.newname()
+        value = self.newvalue()
         metadata = { 'jimmy': 'jups@42' }
 
         self.assertRaises(NoSuchObject, self.backend.lookup, key)
@@ -48,14 +49,14 @@ class BackendTestsMixin(object):
 
     def test_setitem(self):
         key = self.newname()
-        value = self.newname()
+        value = self.newvalue()
         metadata = { 'jimmy': 'jups@42' }
 
         self.assertRaises(NoSuchObject, self.backend.lookup, key)
         self.assertRaises(NoSuchObject, self.backend.__getitem__, key)
 
         with self.backend.open_write(key, metadata) as fh:
-            fh.write(self.newname())
+            fh.write(self.newvalue())
         time.sleep(self.delay)
         self.backend[key] = value
         time.sleep(self.delay)
@@ -69,7 +70,7 @@ class BackendTestsMixin(object):
 
     def test_contains(self):
         key = self.newname()
-        value = self.newname()
+        value = self.newvalue()
 
         self.assertFalse(key in self.backend)
         self.backend[key] = value
@@ -78,7 +79,7 @@ class BackendTestsMixin(object):
 
     def test_delete(self):
         key = self.newname()
-        value = self.newname()
+        value = self.newvalue()
         self.backend[key] = value
         time.sleep(self.delay)
 
@@ -90,8 +91,8 @@ class BackendTestsMixin(object):
     def test_clear(self):
         key1 = self.newname()
         key2 = self.newname()
-        self.backend[key1] = self.newname()
-        self.backend[key2] = self.newname()
+        self.backend[key1] = self.newvalue()
+        self.backend[key2] = self.newvalue()
 
         time.sleep(self.delay)
         self.assertEquals(len(list(self.backend)), 2)
@@ -104,7 +105,7 @@ class BackendTestsMixin(object):
     def test_list(self):
 
         keys = [ self.newname() for dummy in range(12) ]
-        values = [ self.newname() for dummy in range(12) ]
+        values = [ self.newvalue() for dummy in range(12) ]
         for i in range(12):
             self.backend[keys[i]] = values[i]
 
@@ -115,7 +116,7 @@ class BackendTestsMixin(object):
 
         key1 = self.newname()
         key2 = self.newname()
-        value = self.newname()
+        value = self.newvalue()
         self.assertRaises(NoSuchObject, self.backend.lookup, key1)
         self.assertRaises(NoSuchObject, self.backend.lookup, key2)
 
@@ -130,7 +131,7 @@ class BackendTestsMixin(object):
 
         key1 = self.newname()
         key2 = self.newname()
-        value = self.newname()
+        value = self.newvalue()
         self.assertRaises(NoSuchObject, self.backend.lookup, key1)
         self.assertRaises(NoSuchObject, self.backend.lookup, key2)
 
@@ -167,14 +168,14 @@ class S3Tests(BackendTestsMixin, unittest.TestCase):
         if mode & (stat.S_IRGRP | stat.S_IROTH):
             self.skipTest("Authentication file has insecure permissions")
 
-        config = ConfigParser.SafeConfigParser()
+        config = configparser.SafeConfigParser()
         config.read(authfile)
 
         try:
             fs_name = config.get(name, 'test-fs')
             backend_login = config.get(name, 'backend-login')
             backend_password = config.get(name, 'backend-password')
-        except (ConfigParser.NoOptionError, ConfigParser.NoSectionError):
+        except (configparser.NoOptionError, configparser.NoSectionError):
             self.skipTest("Authentication file does not have test section")
 
         return (fs_name, backend_login, backend_password)
@@ -271,12 +272,12 @@ class CompressionTests(BackendTestsMixin, unittest.TestCase):
 class EncryptionTests(CompressionTests):
 
     def _wrap_backend(self):
-        return BetterBackend('schlurz', None, self.plain_backend)
+        return BetterBackend(b'schluz', None, self.plain_backend)
 
     def test_encryption(self):
 
         self.plain_backend['plain'] = b'foobar452'
-        self.backend.store('encrypted', 'testdata', { 'tag': True })
+        self.backend.store('encrypted', b'testdata', { 'tag': True })
         time.sleep(self.delay)
         self.assertEquals(self.backend['encrypted'], b'testdata')
         self.assertNotEquals(self.plain_backend['encrypted'], b'testdata')
@@ -287,7 +288,7 @@ class EncryptionTests(CompressionTests):
         self.assertRaises(ChecksumError, self.backend.fetch, 'encrypted')
         self.assertRaises(ChecksumError, self.backend.lookup, 'encrypted')
 
-        self.backend.passphrase = 'jobzrul'
+        self.backend.passphrase = b'jobzrul'
         self.assertRaises(ChecksumError, self.backend.fetch, 'encrypted')
         self.assertRaises(ChecksumError, self.backend.lookup, 'encrypted')
 
@@ -295,7 +296,7 @@ class EncryptionTests(CompressionTests):
 class EncryptionCompressionTests(EncryptionTests):
 
     def _wrap_backend(self):
-        return BetterBackend('schlurz', 'zlib', self.plain_backend)
+        return BetterBackend(b'schlurz', 'zlib', self.plain_backend)
 
 
 # Somehow important according to pyunit documentation

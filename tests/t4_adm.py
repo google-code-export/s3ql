@@ -6,14 +6,12 @@ Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-
 from s3ql.backends import local
 from s3ql.backends.common import BetterBackend
 import shutil
 import sys
 import tempfile
-import unittest2 as unittest
+import unittest
 import subprocess
 import os.path
 
@@ -40,7 +38,8 @@ class AdmTests(unittest.TestCase):
         proc = subprocess.Popen([os.path.join(BASEDIR, 'bin', 'mkfs.s3ql'),
                                  '-L', 'test fs', '--max-obj-size', '500',
                                  '--cachedir', self.cache_dir, '--quiet',
-                                 self.storage_url ], stdin=subprocess.PIPE)
+                                 self.storage_url ], stdin=subprocess.PIPE,
+                                universal_newlines=True)
 
         print(self.passphrase, file=proc.stdin)
         print(self.passphrase, file=proc.stdin)
@@ -55,7 +54,8 @@ class AdmTests(unittest.TestCase):
 
         proc = subprocess.Popen([os.path.join(BASEDIR, 'bin', 's3qladm'),
                                  '--quiet', 'passphrase',
-                                 self.storage_url ], stdin=subprocess.PIPE)
+                                 self.storage_url ], stdin=subprocess.PIPE,
+                                universal_newlines=True)
 
         print(self.passphrase, file=proc.stdin)
         print(passphrase_new, file=proc.stdin)

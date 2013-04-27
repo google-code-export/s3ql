@@ -6,24 +6,28 @@ Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
+
 from cgitb import scanvars, __UNDEF__
 from llfuse import ROOT_INODE
 import bz2
 import hashlib
 import inspect
+import errno
 import linecache
+import llfuse
 import logging
 import os
+import posixpath
 import pydoc
 import stat
 import sys
 import warnings
-import types
-import errno
 
 # Buffer size when writing objects
 BUFSIZE = 256 * 1024
+
+# Pickle protocol version to use.
+PICKLE_PROTOCOL = 2
 
 log = logging.getLogger('common')
 
@@ -157,7 +161,7 @@ def stream_read_bz2(ifh, ofh):
         if buf:
             ofh.write(buf)
 
-    if decompressor.unused_data or ifh.read(1) != '':
+    if decompressor.unused_data or ifh.read(1) != b'':
         raise ChecksumError('Data after end of bz2 stream')
 
 class ChecksumError(Exception):
@@ -194,7 +198,7 @@ def format_tb(einfo):
     """Return a plain text document describing a given traceback."""
 
     etype, evalue, etb = einfo
-    if type(etype) is types.ClassType:
+    if type(etype) is type:
         etype = etype.__name__
 
     frames = [ 'Traceback (most recent call last):' ]
@@ -309,7 +313,7 @@ def inode_for_path(path, conn):
             inode = conn.get_val("SELECT inode FROM contents_v WHERE name=? AND parent_inode=?",
                                  (el, inode))
         except NoSuchRowError:
-            raise KeyError('Path %s does not exist' % path)
+            raise KeyError('Path %s does not exist' % path) from None
 
     return inode
 
@@ -358,10 +362,8 @@ def get_backend_cachedir(storage_url, cachedir):
     if not os.path.exists(cachedir):
         try:
             os.mkdir(cachedir, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-        except OSError as exc:
-            if exc.errno == errno.EACCES:
-                raise QuietError('No permission to create cache directory (%s)' % cachedir)
-            raise
+        except PermissionError:
+            raise QuietError('No permission to create cache directory (%s)' % cachedir) from None
         
     if not os.access(cachedir, os.R_OK | os.W_OK | os.X_OK):
         raise QuietError('No permission to access cache directory (%s)' % cachedir)
@@ -387,3 +389,60 @@ def sha256_fh(fh):
 
     return sha.digest()
 
+
+def assert_s3ql_fs(path):
+    '''Raise `QuietError` if *path* is not on an S3QL file system
+    
+    Returns name of the S3QL control file.
+    '''
+
+    try:
+        os.stat(path)
+    except FileNotFoundError:
+        raise QuietError('%s does not exist' % path) from None
+    except OSError as exc:
+        if exc.errno is errno.ENOTCONN:
+            raise QuietError('File system appears to have crashed.') from None
+        raise
+
+    ctrlfile = os.path.join(path, CTRL_NAME)
+    if not (CTRL_NAME not in llfuse.listdir(path)
+            and os.path.exists(ctrlfile)):
+        raise QuietError('%s is not on an S3QL file system' % path)
+
+    return ctrlfile
+    
+    
+def assert_fs_owner(path, mountpoint=False):
+    '''Raise `QuietError` if user is not owner of S3QL fs at *path*
+    
+    Implicitly calls `assert_s3ql_fs` first. Returns name of the 
+    S3QL control file.
+    
+    If *mountpoint* is True, also call `assert_s3ql_mountpoint`, i.e.
+    fail if *path* is not the mount point of the file system.
+    '''
+        
+    if mountpoint:
+        ctrlfile = assert_s3ql_mountpoint(path)
+    else:
+        ctrlfile = assert_s3ql_fs(path)
+    
+    if os.stat(ctrlfile).st_uid != os.geteuid() and os.geteuid() != 0:
+        raise QuietError('Permission denied. %s is was not mounted by you '
+                         'and you are not root.' % path)
+
+    return ctrlfile
+    
+def assert_s3ql_mountpoint(mountpoint):
+    '''Raise QuietError if *mountpoint* is not an S3QL mountpoint
+    
+    Implicitly calls `assert_s3ql_fs` first. Returns name of the 
+    S3QL control file.
+    '''
+
+    ctrlfile = assert_s3ql_fs(mountpoint)
+    if not posixpath.ismount(mountpoint):
+        raise QuietError('%s is not a mount point' % mountpoint)
+
+    return ctrlfile

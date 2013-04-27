@@ -6,10 +6,10 @@ Copyright (C) Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-from .common import setup_logging, CTRL_NAME, QuietError
+
+from .common import setup_logging, assert_fs_owner, QuietError, PICKLE_PROTOCOL
 from .parse_args import ArgumentParser
-import cPickle as pickle
+import pickle
 import llfuse
 import logging
 import os
@@ -49,25 +49,11 @@ def main(args=None):
     setup_logging(options)
 
     for name in options.path:
-        if not os.path.exists(name):
-            raise QuietError('%r does not exist' % name)
-
-        parent = os.path.dirname(os.path.abspath(name))
-        fstat_p = os.stat(parent)
+        if os.path.ismount(name):
+            raise QuietError('%s is a mount point.' % name)
+        ctrlfile = assert_fs_owner(name)
         fstat = os.stat(name)
-
-        if fstat_p.st_dev != fstat.st_dev:
-            raise QuietError('%s is a mount point itself.' % name)
-
-        ctrlfile = os.path.join(parent, CTRL_NAME)
-        if not (CTRL_NAME not in llfuse.listdir(parent) and os.path.exists(ctrlfile)):
-            raise QuietError('%s is not on an S3QL file system' % name)
-
-        if os.stat(ctrlfile).st_uid != os.geteuid():
-            raise QuietError('Only root and the mounting user may run s3qllock.')
-
-        llfuse.setxattr(ctrlfile, 'lock', pickle.dumps((fstat.st_ino,),
-                                                       pickle.HIGHEST_PROTOCOL))
+        llfuse.setxattr(ctrlfile, 'lock', pickle.dumps((fstat.st_ino,), PICKLE_PROTOCOL))
 
 if __name__ == '__main__':
     main(sys.argv[1:])
