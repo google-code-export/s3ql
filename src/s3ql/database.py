@@ -1,7 +1,7 @@
 '''
 database.py - this file is part of S3QL (http://s3ql.googlecode.com)
 
-Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
+Copyright (C) Nikolaus Rath <Nikolaus@rath.org>
 
 This program can be distributed under the terms of the GNU GPLv3.
 
@@ -11,18 +11,14 @@ Module Attributes:
 
 :initsql:      SQL commands that are executed whenever a new
                connection is created.
-                 
 '''
 
-from __future__ import division, print_function
-
-import logging
+from .logging import logging # Ensure use of custom logger class
+from .common import QuietError
 import apsw
 import os
-import types
-from .common import QuietError
 
-log = logging.getLogger("database")
+log = logging.getLogger(__name__)
 
 sqlite_ver = tuple([ int(x) for x in apsw.sqlitelibversion().split('.') ])
 if sqlite_ver < (3, 7, 0):
@@ -60,19 +56,10 @@ class Connection(object):
     Instances are not thread safe. They can be passed between threads,
     but must not be called concurrently.
     
-    Instances also takes care of converting bytes objects into buffer
-    objects and back, so that they are stored as BLOBS in the database. If you
-    want to store TEXT, you need to supply unicode objects instead. (This
-    functionality is only needed under Python 2.x, under Python 3.x the apsw
-    module already behaves in the correct way).
-    
     Attributes
     ----------
     
     :conn:     apsw connection object
-    :cur:      default cursor, to be used for all queries
-               that do not return a ResultSet (i.e., that finalize
-               the cursor when they return)
     '''
 
     def __init__(self, file_):
@@ -96,63 +83,34 @@ class Connection(object):
             return 0
 
     def query(self, *a, **kw):
-        '''Execute the given SQL statement. Return ResultSet.
+        '''Return iterator over results of given SQL statement 
         
-        Transforms buffer() to bytes() and vice versa. If the
-        caller may not retrieve all rows of the result, it
-        should delete the `ResultSet` object has soon as 
-        possible to terminate the SQL statement.
+        If the caller does not retrieve all rows the iterator's close() method
+        should be called as soon as possible to terminate the SQL statement
+        (otherwise it may block execution of other statements). To this end,
+        the iterator may also be used as a context manager.
         '''
 
-        return ResultSet(self._execute(*a, **kw))
+        return ResultSet(self.conn.cursor().execute(*a, **kw))
 
     def execute(self, *a, **kw):
         '''Execute the given SQL statement. Return number of affected rows '''
 
-        self._execute(*a, **kw)
+        self.conn.cursor().execute(*a, **kw)
         return self.changes()
 
     def rowid(self, *a, **kw):
         """Execute SQL statement and return last inserted rowid"""
 
-        self._execute(*a, **kw)
+        self.conn.cursor().execute(*a, **kw)
         return self.conn.last_insert_rowid()
-
-    def _execute(self, statement, bindings=None):
-        '''Execute the given SQL statement 
-        
-        This method takes care of converting str/bytes to buffer
-        objects.
-        '''
-
-        if isinstance(bindings, types.GeneratorType):
-            bindings = list(bindings)
-
-        # Convert bytes to buffer
-        if isinstance(bindings, dict):
-            newbindings = dict()
-            for key in bindings:
-                if isinstance(bindings[key], bytes):
-                    newbindings[key] = buffer(bindings[key])
-                else:
-                    newbindings[key] = bindings[key]
-        elif isinstance(bindings, (list, tuple)):
-            newbindings = [ (val if not isinstance(val, bytes) else buffer(val))
-                           for val in bindings ]
-        else:
-            newbindings = bindings
-
-        if bindings is not None:
-            return self.conn.cursor().execute(statement, newbindings)
-        else:
-            return self.conn.cursor().execute(statement)
 
     def has_val(self, *a, **kw):
         '''Execute statement and check if it gives result rows'''
 
-        res = self._execute(*a, **kw)
+        res = self.conn.cursor().execute(*a, **kw)
         try:
-            res.next()
+            next(res)
         except StopIteration:
             return False
         else:
@@ -181,13 +139,13 @@ class Connection(object):
         than one result row, raises `NoUniqueValueError`.
         """
 
-        res = ResultSet(self._execute(*a, **kw))
+        res = self.conn.cursor().execute(*a, **kw)
         try:
-            row = res.next()
+            row = next(res)
         except StopIteration:
-            raise NoSuchRowError()
+            raise NoSuchRowError() from None
         try:
-            res.next()
+            next(res)
         except StopIteration:
             # Fine, we only wanted one row
             pass
@@ -226,24 +184,28 @@ class NoSuchRowError(Exception):
 
 
 class ResultSet(object):
-    '''Iterator over the result of an SQL query
+    '''
+    Provide iteration over encapsulated apsw cursor. Additionally,
+    `ResultSet` instances may be used as context managers to terminate
+    the query before all result rows have been retrieved. 
+    '''
     
-    This class automatically converts back from buffer() to bytes().'''
-
     def __init__(self, cur):
         self.cur = cur
-
+        
+    def __next__(self):
+        return next(self.cur)
+    
     def __iter__(self):
         return self
-
-    def next(self):
-        return [ (col if not isinstance(col, buffer) else bytes(col))
-                  for col in self.cur.next() ]
-
-    def close(self):
-        '''Finish query transaction'''
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_value, traceback):
         self.cur.close()
-
-    # Once the ResultSet goes out of scope, the cursor goes out of scope
-    # too (because query() uses a fresh cursor), so we don't have to
-    # take any special precautions to finish the active SQL statement.  
+        
+    def close(self):
+        '''Terminate query'''
+        
+        self.cur.close()

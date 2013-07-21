@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 '''
 sphinx_pipe.py - this file is part of S3QL (http://s3ql.googlecode.com)
 
@@ -16,6 +15,7 @@ import subprocess
 import shlex
 from docutils import io, nodes, statemachine
 import os.path
+import sys
 
 class PipeInclude(Include):
     """
@@ -27,21 +27,26 @@ class PipeInclude(Include):
             self.lineno - self.state_machine.input_offset - 1)
         source_dir = os.path.dirname(os.path.abspath(source))
 
-        command = self.arguments[0].encode('UTF-8')
+        command = self.arguments[0]
+        command_list = shlex.split(command)
+        
+        if command_list[0] == 'python':
+            command_list[0] = sys.executable
+            
         encoding = self.options.get(
             'encoding', self.state.document.settings.input_encoding)
         tab_width = self.options.get(
             'tab-width', self.state.document.settings.tab_width)
 
         try:
-            child = subprocess.Popen(shlex.split(command), stdout=subprocess.PIPE,
-                                     cwd=source_dir)
+            child = subprocess.Popen(command_list, stdout=subprocess.PIPE,
+                                     cwd=source_dir, universal_newlines=True)
             include_file = io.FileInput(
                 source=child.stdout, encoding=encoding,
                 error_handler=(self.state.document.settings.\
                                input_encoding_error_handler),
                 handle_io_errors=None)
-        except IOError, error:
+        except IOError as error:
             raise self.severe('Problems with "%s" directive path:\n%s: %s.' %
                         (self.name, error.__class__.__name__, str(error)))
             # Hack: Since Python 2.6, the string interpolation returns a
@@ -58,7 +63,7 @@ class PipeInclude(Include):
                 include_text = ''.join(include_lines[startline:endline])
             else:
                 include_text = include_file.read()
-        except UnicodeError, error:
+        except UnicodeError as error:
             raise self.severe(
                 'Problem with "%s" directive:\n%s: %s'
                 % (self.name, error.__class__.__name__, error))

@@ -6,31 +6,34 @@ Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
+from .logging import logging, setup_logging, QuietError
 from . import fs, CURRENT_FS_REV
 from .backends.common import get_backend_factory, BackendPool, DanglingStorageURLError
 from .block_cache import BlockCache
-from .common import (setup_logging, get_backend_cachedir, get_seq_no, QuietError, stream_write_bz2, 
-    stream_read_bz2)
+from .common import (get_backend_cachedir, get_seq_no, stream_write_bz2, stream_read_bz2,
+                     PICKLE_PROTOCOL)
 from .daemonize import daemonize
 from .database import Connection
 from .inode_cache import InodeCache
 from .metadata import cycle_metadata, dump_metadata, restore_metadata
 from .parse_args import ArgumentParser
 from threading import Thread
+from contextlib import ExitStack
+import _thread
 import argparse
-import cPickle as pickle
+import faulthandler
 import llfuse
-import logging
 import os
+import pickle
+import re
 import signal
 import sys
 import tempfile
-import thread
 import threading
 import time
+import atexit
 
-log = logging.getLogger("mount")
+log = logging.getLogger(__name__)
 
 def install_thread_excepthook():
     """work around sys.excepthook thread bug
@@ -65,7 +68,7 @@ def main(args=None):
         args = sys.argv[1:]
 
     options = parse_args(args)
-
+    
     # Save handler so that we can remove it when daemonizing
     stdout_log_handler = setup_logging(options)
 
@@ -82,7 +85,8 @@ def main(args=None):
 
     backend_factory = get_backend_factory(options)
     backend_pool = BackendPool(backend_factory)
-
+    atexit.register(backend_pool.flush)
+    
     # Get paths
     cachepath = get_backend_cachedir(options.storage_url, options.cachedir)
 
@@ -91,7 +95,7 @@ def main(args=None):
         with backend_pool() as backend:
             (param, db) = get_metadata(backend, cachepath)
     except DanglingStorageURLError as exc:
-        raise QuietError(str(exc))
+        raise QuietError(str(exc)) from None
 
     if param['max_obj_size'] < options.min_obj_size:
         raise QuietError('Maximum object size must be bigger than minimum object size.')
@@ -112,93 +116,70 @@ def main(args=None):
     operations = fs.Operations(block_cache, db, max_obj_size=param['max_obj_size'],
                                inode_cache=InodeCache(db, param['inode_gen']),
                                upload_event=metadata_upload_thread.event)
-    
-    log.info('Mounting filesystem...')
-    llfuse.init(operations, options.mountpoint, get_fuse_opts(options))
 
-    if not options.fg:
-        if stdout_log_handler:
-            logging.getLogger().removeHandler(stdout_log_handler)
-        daemonize(options.cachedir)
+    with ExitStack() as cm:
+        log.info('Mounting filesystem...')
+        try:
+            llfuse.init(operations, options.mountpoint, get_fuse_opts(options))
+        except RuntimeError as exc:
+            raise QuietError(str(exc)) from None
+        
+        unmount_clean = False
+        def unmount():
+            log.info("Unmounting file system...")
+            # Acquire lock so that Operations.destroy() is called with the
+            # global lock like all other handlers
+            with llfuse.lock:
+                llfuse.close(unmount=unmount_clean)
+        cm.callback(unmount)
+        
+        if options.fg:
+            faulthandler.enable()
+        else:
+            if stdout_log_handler:
+                logging.getLogger().removeHandler(stdout_log_handler)
+            global crit_log_fh
+            crit_log_fh = open(os.path.join(options.cachedir, 'mount.s3ql_crit.log'), 'a')
+            faulthandler.enable(crit_log_fh)
+            daemonize(options.cachedir)
 
-    exc_info = setup_exchook()
-
-    # After we start threads, we must be sure to terminate them
-    # or the process will hang 
-    try:
+        mark_metadata_dirty(backend, cachepath, param)
+        
         block_cache.init(options.threads)
+        cm.callback(block_cache.destroy)
+        
         metadata_upload_thread.start()
-        commit_thread.start()
+        cm.callback(metadata_upload_thread.join)
+        cm.callback(metadata_upload_thread.stop)
 
+        commit_thread.start()
+        cm.callback(commit_thread.join)
+        cm.callback(commit_thread.stop)
+        
         if options.upstart:
             os.kill(os.getpid(), signal.SIGSTOP)
+
+        exc_info = setup_exchook()
         if options.profile:
             prof.runcall(llfuse.main, options.single)
         else:
             llfuse.main(options.single)
 
+        # Allow operations to terminate while block_cache is still available
+        # (destroy() will be called again when from llfuse.close(), but at that
+        # point the block cache is no longer available).
+        with llfuse.lock:
+            operations.destroy()
+
         # Re-raise if main loop terminated due to exception in other thread
-        # or during cleanup, but make sure we still unmount file system
-        # (so that Operations' destroy handler gets called)
         if exc_info:
             (tmp0, tmp1, tmp2) = exc_info
             exc_info[:] = []
-            raise tmp0, tmp1, tmp2
+            raise tmp0(tmp1).with_traceback(tmp2)
 
         log.info("FUSE main loop terminated.")
 
-    except:
-        # Tell finally block not to raise any additional exceptions
-        exc_info[:] = sys.exc_info()
-
-        log.warn('Encountered exception, trying to clean up...')
-
-        # We do *not* free the mountpoint on exception. Why? E.g. if someone is
-        # mirroring the mountpoint, and it suddenly becomes empty, all the
-        # mirrored data will be deleted. However, it's crucial to still call
-        # llfuse.close, so that Operations.destroy() can flush the inode cache.
-        try:
-            log.info("Unmounting file system...")
-            with llfuse.lock:
-                llfuse.close(unmount=False)
-        except:
-            log.exception("Exception during cleanup:")
-
-        raise
-
-    else:
-        # llfuse.close() still needs block_cache.
-        log.info("Unmounting file system...")
-        with llfuse.lock:
-            llfuse.close()
-
-    # Terminate threads
-    finally:
-        log.debug("Waiting for background threads...")
-        for (op, with_lock) in ((metadata_upload_thread.stop, False),
-                                (commit_thread.stop, False),
-                                (block_cache.destroy, True),
-                                (metadata_upload_thread.join, False),
-                                (commit_thread.join, False)):
-            try:
-                if with_lock:
-                    with llfuse.lock:
-                        op()
-                else:
-                    op()
-            except:
-                # We just live with the race cond here
-                if not exc_info:
-                    exc_info = sys.exc_info()
-                else:
-                    log.exception("Exception during cleanup:")
-
-        log.debug("All background threads terminated.")
-
-    # Re-raise if there's been an exception during cleanup
-    # (either in main thread or other thread)
-    if exc_info:
-        raise exc_info[0], exc_info[1], exc_info[2]
+        unmount_clean = True
 
     # At this point, there should be no other threads left
 
@@ -214,35 +195,39 @@ def main(args=None):
             log.info('File system unchanged, not uploading metadata.')
             del backend['s3ql_seq_no_%d' % param['seq_no']]
             param['seq_no'] -= 1
-            pickle.dump(param, open(cachepath + '.params', 'wb'), 2)
+            with open(cachepath + '.params', 'wb') as fh:
+                pickle.dump(param, fh, PICKLE_PROTOCOL)
         elif seq_no == param['seq_no']:
-            cycle_metadata(backend)
             param['last-modified'] = time.time()
 
             log.info('Dumping metadata...')
-            fh = tempfile.TemporaryFile()
-            dump_metadata(db, fh)
-            def do_write(obj_fh):
-                fh.seek(0)
-                stream_write_bz2(fh, obj_fh)
-                return obj_fh
+            with tempfile.TemporaryFile() as fh:
+                dump_metadata(db, fh)
+                def do_write(obj_fh):
+                    fh.seek(0)
+                    stream_write_bz2(fh, obj_fh)
+                    return obj_fh
 
-            log.info("Compressing and uploading metadata...")
-            obj_fh = backend.perform_write(do_write, "s3ql_metadata", metadata=param,
-                                          is_compressed=True)
-            log.info('Wrote %.2f MiB of compressed metadata.', obj_fh.get_obj_size() / 1024 ** 2)
-            pickle.dump(param, open(cachepath + '.params', 'wb'), 2)
+                log.info("Compressing and uploading metadata...")
+                obj_fh = backend.perform_write(do_write, "s3ql_metadata_new",
+                                               metadata=param, is_compressed=True)
+            log.info('Wrote %.2f MiB of compressed metadata', obj_fh.get_obj_size() / 1024 ** 2)
+            log.info('Cycling metadata backups...')
+            cycle_metadata(backend)
+            with open(cachepath + '.params', 'wb') as fh:
+                pickle.dump(param, fh, PICKLE_PROTOCOL)
         else:
             log.error('Remote metadata is newer than local (%d vs %d), '
                       'refusing to overwrite!', seq_no, param['seq_no'])
             log.error('The locally cached metadata will be *lost* the next time the file system '
                       'is mounted or checked and has therefore been backed up.')
             for name in (cachepath + '.params', cachepath + '.db'):
-                for i in reversed(range(4)):
+                for i in range(4)[::-1]:
                     if os.path.exists(name + '.%d' % i):
                         os.rename(name + '.%d' % i, name + '.%d' % (i + 1))
                 os.rename(name, name + '.0')
 
+    log.info('Cleaning up local metadata...')
     db.execute('ANALYZE')
     db.execute('VACUUM')
     db.close()
@@ -258,29 +243,35 @@ def main(args=None):
             p.sort_stats('time')
             p.print_stats(50)
 
+    log.info('All done.')
+
+# Memory required for LZMA compression in MB (from xz(1))
+LZMA_MEMORY = { 0: 3, 1: 9, 2: 17, 3: 32, 4: 48,
+                5: 94, 6: 94, 7: 186, 8: 370, 9: 674 }
+
 def determine_threads(options):
     '''Return optimum number of upload threads'''
 
     cores = os.sysconf('SC_NPROCESSORS_ONLN')
     memory = os.sysconf('SC_PHYS_PAGES') * os.sysconf('SC_PAGESIZE')
 
-    if options.compress == 'lzma':
+    if options.compress[0] == 'lzma':
         # Keep this in sync with compression level in backends/common.py
         # Memory usage according to man xz(1)
-        mem_per_thread = 186 * 1024 ** 2
+        mem_per_thread = LZMA_MEMORY[options.compress[1]] * 1024 ** 2
     else:
         # Only check LZMA memory usage
         mem_per_thread = 0
 
     if cores == -1 or memory == -1:
-        log.warn("Can't determine number of cores, using 2 upload threads.")
+        log.warning("Can't determine number of cores, using 2 upload threads.")
         return 1
     elif 2 * cores * mem_per_thread > (memory / 2):
         threads = min(int((memory / 2) // mem_per_thread), 10)
         if threads > 0:
             log.info('Using %d upload threads (memory limited).', threads)
         else:
-            log.warn('Warning: compression will require %d MiB memory '
+            log.warning('Warning: compression will require %d MiB memory '
                      '(%d%% of total system memory', mem_per_thread / 1024 ** 2,
                      mem_per_thread * 100 / memory)
             threads = 1
@@ -298,7 +289,8 @@ def get_metadata(backend, cachepath):
     # Check for cached metadata
     db = None
     if os.path.exists(cachepath + '.params'):
-        param = pickle.load(open(cachepath + '.params', 'rb'))
+        with open(cachepath + '.params', 'rb') as fh:
+            param = pickle.load(fh)
         if param['seq_no'] < seq_no:
             log.info('Ignoring locally cached metadata (outdated).')
             param = backend.lookup('s3ql_metadata')
@@ -325,47 +317,57 @@ def get_metadata(backend, cachepath):
     if param['needs_fsck']:
         raise QuietError("File system damaged or not unmounted cleanly, run fsck!")
     if time.time() - param['last_fsck'] > 60 * 60 * 24 * 31:
-        log.warn('Last file system check was more than 1 month ago, '
+        log.warning('Last file system check was more than 1 month ago, '
                  'running fsck.s3ql is recommended.')
 
     if  param['max_inode'] > 2 ** 32 - 50000:
         raise QuietError('Insufficient free inodes, fsck run required.')
     elif param['max_inode'] > 2 ** 31:
-        log.warn('Few free inodes remaining, running fsck is recommended')
+        log.warning('Few free inodes remaining, running fsck is recommended')
 
     # Download metadata
     if not db:
-        def do_read(fh):
-            tmpfh = tempfile.TemporaryFile()
-            stream_read_bz2(fh, tmpfh)
-            return tmpfh
-        log.info('Downloading and decompressing metadata...')
-        tmpfh = backend.perform_read(do_read, "s3ql_metadata")
-        log.info("Reading metadata...")
-        tmpfh.seek(0)
-        db = restore_metadata(tmpfh, cachepath + '.db')
+        with tempfile.TemporaryFile() as tmpfh:
+            def do_read(fh):
+                tmpfh.seek(0)
+                tmpfh.truncate()
+                stream_read_bz2(fh, tmpfh)
 
-    # Increase metadata sequence no 
+            log.info('Downloading and decompressing metadata...')
+            backend.perform_read(do_read, "s3ql_metadata")
+            
+            log.info("Reading metadata...")
+            tmpfh.seek(0)
+            db = restore_metadata(tmpfh, cachepath + '.db')
+
+    with open(cachepath + '.params', 'wb') as fh:
+        pickle.dump(param, fh, PICKLE_PROTOCOL)
+            
+    return (param, db)
+
+def mark_metadata_dirty(backend, cachepath, param):
+    '''Mark metadata as dirty and increase sequence number'''
+    
     param['seq_no'] += 1
     param['needs_fsck'] = True
-    backend['s3ql_seq_no_%d' % param['seq_no']] = 'Empty'
-    pickle.dump(param, open(cachepath + '.params', 'wb'), 2)
+    backend['s3ql_seq_no_%d' % param['seq_no']] = b'Empty'
+    with open(cachepath + '.params', 'wb') as fh:
+        pickle.dump(param, fh, PICKLE_PROTOCOL)
     param['needs_fsck'] = False
 
-    return (param, db)
 
 def get_fuse_opts(options):
     '''Return fuse options for given command line options'''
 
-    fuse_opts = [ b"nonempty", b'fsname=%s' % options.storage_url,
+    fuse_opts = [ "nonempty", 'fsname=%s' % options.storage_url,
                   'subtype=s3ql' ]
 
     if options.allow_other:
-        fuse_opts.append(b'allow_other')
+        fuse_opts.append('allow_other')
     if options.allow_root:
-        fuse_opts.append(b'allow_root')
+        fuse_opts.append('allow_root')
     if options.allow_other or options.allow_root:
-        fuse_opts.append(b'default_permissions')
+        fuse_opts.append('default_permissions')
 
     return fuse_opts
 
@@ -398,6 +400,22 @@ def parse_args(args):
                     raise QuietError('Read-only mounting not supported.')
                 args.insert(pos, '--' + opt)
 
+    def compression_type(s):
+        hit = re.match(r'^([a-z]+)(?:-([0-9]))?$', s)
+        if not hit:
+            raise argparse.ArgumentTypeError('%s is not a valid --compress value' % s)
+        alg = hit.group(1)
+        lvl = hit.group(2)
+        if alg not in ('none', 'zlib', 'bzip2', 'lzma'):
+            raise argparse.ArgumentTypeError('Invalid compression algorithm: %s' % alg)
+        if lvl is None:
+            lvl = 6
+        else:
+            lvl = int(lvl)
+        if alg == 'none':
+            alg =  None
+        return (alg, lvl)
+        
     parser = ArgumentParser(
         description="Mount an S3QL file system.")
 
@@ -409,6 +427,7 @@ def parse_args(args):
     parser.add_ssl()
     parser.add_version()
     parser.add_storage_url()
+    parser.add_fatal_warnings()
 
     parser.add_argument("mountpoint", metavar='<mountpoint>', type=os.path.abspath,
                         help='Where to mount the file system')
@@ -447,10 +466,12 @@ def parse_args(args):
     parser.add_argument("--profile", action="store_true", default=False,
                       help="Create profiling information. If you don't understand this, "
                            "then you don't need it.")
-    parser.add_argument("--compress", action="store", default='lzma', metavar='<name>',
-                      choices=('lzma', 'bzip2', 'zlib', 'none'),
-                      help="Compression algorithm to use when storing new data. Allowed "
-                           "values: `lzma`, `bzip2`, `zlib`, none. (default: `%(default)s`)")
+    parser.add_argument("--compress", action="store", default='lzma-6',
+                        metavar='<algorithm-lvl>', type=compression_type,
+                        help="Compression algorithm and compression level to use when "
+                             "storing new data. *algorithm* may be any of `lzma`, `bzip2`, "
+                             "`zlib`, or none. *lvl* may be any integer from 0 (fastest) "
+                             "to 9 (slowest). Default: `%(default)s`")
     parser.add_argument("--metadata-upload-interval", action="store", type=int,
                       default=24 * 60 * 60, metavar='<seconds>',
                       help='Interval in seconds between complete metadata uploads. '
@@ -479,9 +500,6 @@ def parse_args(args):
     if options.metadata_upload_interval == 0:
         options.metadata_upload_interval = None
 
-    if options.compress == 'none':
-        options.compress = None
-
     return options
 
 class MetadataUploadThread(Thread):
@@ -495,7 +513,7 @@ class MetadataUploadThread(Thread):
     '''
 
     def __init__(self, backend_pool, param, db, interval):
-        super(MetadataUploadThread, self).__init__()
+        super().__init__()
         self.backend_pool = backend_pool
         self.param = param
         self.db = db
@@ -510,7 +528,7 @@ class MetadataUploadThread(Thread):
         log.debug('MetadataUploadThread: start')
 
         while not self.quit:
-            timed_wait(self.event, self.interval, 2)
+            self.event.wait(self.interval)
             self.event.clear()
 
             if self.quit:
@@ -537,7 +555,6 @@ class MetadataUploadThread(Thread):
                     fh.close()
                     continue
 
-                cycle_metadata(backend)
                 fh.seek(0)
                 self.param['last-modified'] = time.time()
 
@@ -548,9 +565,12 @@ class MetadataUploadThread(Thread):
                     stream_write_bz2(fh, obj_fh)
                     return obj_fh
                 log.info("Compressing and uploading metadata...")
-                obj_fh = backend.perform_write(do_write, "s3ql_metadata", metadata=self.param,
-                                              is_compressed=True)
-                log.info('Wrote %.2f MiB of compressed metadata.', obj_fh.get_obj_size() / 1024 ** 2)
+                obj_fh = backend.perform_write(do_write, "s3ql_metadata_new",
+                                               metadata=self.param, is_compressed=True)
+                log.info('Wrote %.2f MiB of compressed metadata.',
+                         obj_fh.get_obj_size() / 1024 ** 2)
+                log.info('Cycling metadata backups...')
+                cycle_metadata(backend)
                 self.param['seq_no'] += 1
 
                 fh.close()
@@ -561,6 +581,7 @@ class MetadataUploadThread(Thread):
     def stop(self):
         '''Signal thread to terminate'''
 
+        log.debug('MetadataUploadThread: stop() called')
         self.quit = True
         self.event.set()
 
@@ -571,12 +592,12 @@ def setup_exchook():
     by this function.
     '''
 
-    this_thread = thread.get_ident()
+    this_thread = _thread.get_ident()
     old_exchook = sys.excepthook
     exc_info = []
 
     def exchook(type_, val, tb):
-        if (thread.get_ident() != this_thread
+        if (_thread.get_ident() != this_thread
             and not exc_info):
             os.kill(os.getpid(), signal.SIGTERM)
             exc_info.append(type_)
@@ -587,7 +608,7 @@ def setup_exchook():
 
         # If the main thread re-raised exception, there is no need to call
         # excepthook again
-        elif not (thread.get_ident() == this_thread
+        elif not (_thread.get_ident() == this_thread
                   and exc_info == [type_, val, tb]):
             old_exchook(type_, val, tb)
 
@@ -607,7 +628,7 @@ class CommitThread(Thread):
 
 
     def __init__(self, block_cache):
-        super(CommitThread, self).__init__()
+        super().__init__()
         self.block_cache = block_cache
         self.stop_event = threading.Event()
         self.name = 'CommitThread'
@@ -618,7 +639,7 @@ class CommitThread(Thread):
         while not self.stop_event.is_set():
             did_sth = False
             stamp = time.time()
-            for el in self.block_cache.entries.values_rev():
+            for el in self.block_cache.entries.values():
                 if stamp - el.last_access < 10:
                     break
                 if not (el.dirty and (el.inode, el.blockno) not in self.block_cache.in_transit):
@@ -638,38 +659,15 @@ class CommitThread(Thread):
                     break
 
             if not did_sth:
-                timed_wait(self.stop_event, 6, 2)
+                self.stop_event.wait(5)
 
         log.debug('CommitThread: end')
 
     def stop(self):
         '''Signal thread to terminate'''
 
+        log.debug('CommitThread: stop() called')
         self.stop_event.set()
-
-
-def timed_wait(event, timeout, interval=1):
-    '''Wait for *event* to occur
-    
-    In Python 3, this is just a wrapper around event.wait() which works well. 
-    
-    In Python 2, however, event.wait() polls the event at small intervals
-    which causes noticeable CPU consumption. Therefore, for Python 2 we we 
-    implement our own poll loop that runs at a rate of our own choosing.
-    '''
-    if sys.version_info[0] > 2 or timeout is None:
-        return event.wait(timeout)
-
-    endtime = time.time() + timeout
-    while True:
-        if event.is_set():
-            return
-        
-        now = time.time()
-        if now > endtime:
-            return
-        
-        time.sleep(min(interval, endtime - now))            
 
 if __name__ == '__main__':
     main(sys.argv[1:])

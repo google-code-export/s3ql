@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 '''
 argparse.py - this file is part of S3QL (http://s3ql.googlecode.com)
 
@@ -34,11 +33,11 @@ are:
 # Pylint really gets confused by this module
 #pylint: disable-all
 
-from __future__ import division, print_function, absolute_import
-from . import VERSION
+
+from . import RELEASE
 from argparse import ArgumentTypeError, ArgumentError
 import argparse
-import errno
+from .logging import logging # Ensure use of custom logger class
 import logging.handlers
 import os
 import re
@@ -67,7 +66,7 @@ class HelpFormatter(argparse.HelpFormatter):
                 else:
                     res.append('  or:  ')
                 if s is DEFAULT_USAGE:
-                    res.append(super(HelpFormatter, self)._format_usage(None, actions, groups, '')[:-1])
+                    res.append(super()._format_usage(None, actions, groups, '')[:-1])
                 else:
                     res.append(s % dict(prog=self._prog))
                     res.append('\n')
@@ -75,16 +74,16 @@ class HelpFormatter(argparse.HelpFormatter):
             return '%s\n\n' % ''.join(res)
 
         elif usage is DEFAULT_USAGE:
-            return super(HelpFormatter, self)._format_usage(None, actions, groups, prefix)
+            return super()._format_usage(None, actions, groups, prefix)
         else:
-            return super(HelpFormatter, self)._format_usage(usage, actions, groups, prefix)
+            return super()._format_usage(usage, actions, groups, prefix)
 
     def format_help(self):
-        help = super(HelpFormatter, self).format_help()
-        if help.count('\n') > 2:
-            return help + '\n'
+        help_ = super().format_help()
+        if help_.count('\n') > 2:
+            return help_ + '\n'
         else:
-            return help
+            return help_
 
 
 class SubParsersAction(argparse._SubParsersAction):
@@ -93,7 +92,7 @@ class SubParsersAction(argparse._SubParsersAction):
 
     def __init__(self, **kw):
         self.parent = kw.pop('parent')
-        super(SubParsersAction, self).__init__(**kw)
+        super().__init__(**kw)
 
     def add_parser(self, *a, **kwargs):
         '''Pass parent usage and add_help attributes to new parser'''
@@ -120,7 +119,7 @@ class SubParsersAction(argparse._SubParsersAction):
                 if p.epilog:
                     kwargs.setdefault('epilog', p.epilog % dict(prog=self.parent.prog))
 
-        return super(SubParsersAction, self).add_parser(*a, **kwargs)
+        return super().add_parser(*a, **kwargs)
 
 
 class ArgumentParser(argparse.ArgumentParser):
@@ -129,23 +128,27 @@ class ArgumentParser(argparse.ArgumentParser):
         if 'formatter_class' not in kw:
             kw['formatter_class'] = HelpFormatter
 
-        super(ArgumentParser, self).__init__(*a, **kw)
+        super().__init__(*a, **kw)
         self.register('action', 'parsers', SubParsersAction)
 
     def add_version(self):
         self.add_argument('--version', action='version',
                           help="just print program version and exit",
-                          version='S3QL %s' % VERSION)
+                          version='S3QL %s' % RELEASE)
 
     def add_quiet(self):
         self.add_argument("--quiet", action="store_true", default=False,
                           help="be really quiet")
 
     def add_ssl(self):
-        self.add_argument("--ssl", action="store_true", default=False,
-                          help="Always use SSL connections when connecting to remote servers. "
-                          "For backends that allow only encrypted connections, "
-                          "S3QL uses SSL automatically, even if this option is not set.")
+        self.add_argument("--no-ssl", action="store_true", default=False,
+                          help="Do not use secure (ssl) connections when connecting "
+                               "to remote servers.")
+        
+        self.add_argument("--ssl-ca-path", metavar='path', default=None, type=str,
+                          help="File or directory or containing the trusted CA certificates. "
+                               "If not specified, the defaults compiled into the system's "
+                               "OpenSSL library are used.")
         
     def add_debug_modules(self):
         self.add_argument("--debug", action="append", metavar='<module>',
@@ -174,6 +177,13 @@ class ArgumentParser(argparse.ArgumentParser):
                            'it reaches 1 MiB, and at most 5 old log files will be kept. '
                            'Specify ``none`` to disable logging. Default: ``%(default)s``')
 
+    def add_fatal_warnings(self):
+        # Make all log messages of severity warning or higher raise
+        # exceptions. This option is not listed in the --help output and used by
+        # the unit tests.     
+        self.add_argument("--fatal-warnings", action='store_true', default=False,
+                          help=argparse.SUPPRESS)
+
     def add_storage_url(self):
         self.add_argument("storage_url", metavar='<storage-url>',
                           type=storage_url_type,
@@ -194,12 +204,12 @@ class ArgumentParser(argparse.ArgumentParser):
             formatter.add_usage(None, positionals, groups, '')
             kw['prog'] = formatter.format_help().strip()
 
-        return super(ArgumentParser, self).add_subparsers(**kw)
+        return super().add_subparsers(**kw)
 
     def parse_args(self, *args, **kwargs):
         
         try:
-            return super(ArgumentParser, self).parse_args(*args, **kwargs)
+            return super().parse_args(*args, **kwargs)
         except ArgumentError as exc:
             self.exit(str(exc))
 
@@ -232,21 +242,19 @@ def log_handler_type(s):
         if dirname and not os.path.exists(dirname):
             try:
                 os.makedirs(dirname)
-            except OSError as exc:
-                if exc.errno == errno.EACCES:
-                    raise ArgumentTypeError('No permission to create log file %s' % fullpath)
-                raise
+            except PermissionError:
+                raise ArgumentTypeError('No permission to create log file %s' % fullpath)
                     
         try:
             handler = logging.handlers.RotatingFileHandler(fullpath,
                                                            maxBytes=1024 ** 2, backupCount=5)
-        except IOError as exc:
-            if exc.errno == errno.EACCES:
-                raise ArgumentTypeError('No permission to write log file %s' % fullpath)
-            raise
+        except PermissionError:
+            raise ArgumentTypeError('No permission to write log file %s' % fullpath) from None
         
-        formatter = logging.Formatter('%(asctime)s.%(msecs)03d [%(process)s] %(threadName)s: '
-                                      '[%(name)s] %(message)s', datefmt="%Y-%m-%d %H:%M:%S")
+        formatter = logging.Formatter('%(asctime)s.%(msecs)03d [pid=%(process)r, '
+                                      'thread=%(threadName)r, module=%(name)r, '
+                                      'fn=%(funcName)r, line=%(lineno)r]: %(message)s',
+                                      datefmt="%Y-%m-%d %H:%M:%S")
 
     handler.setFormatter(formatter)
     return handler

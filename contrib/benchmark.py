@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 '''
 benchmark.py - this file is part of S3QL (http://s3ql.googlecode.com)
 
@@ -11,10 +11,8 @@ Copyright (C) 2010 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
 import argparse
 import atexit
-import logging
 import os
 import shutil
 import subprocess
@@ -29,14 +27,15 @@ if (os.path.exists(os.path.join(basedir, 'setup.py')) and
     os.path.exists(os.path.join(basedir, 'src', 's3ql', '__init__.py'))):
     sys.path = [os.path.join(basedir, 'src')] + sys.path
 
+from s3ql.logging import logging, setup_logging, QuietError
 from s3ql.backends.common import get_backend, BetterBackend, DanglingStorageURLError
 from s3ql.backends.local import Backend
-from s3ql.common import setup_logging, BUFSIZE, QuietError
+from s3ql.common import BUFSIZE
 from s3ql.parse_args import ArgumentParser
 
 ALGS = ('lzma', 'bzip2', 'zlib')
 
-log = logging.getLogger('benchmark')
+log = logging.getLogger(__name__)
 
 def parse_args(args):
     '''Parse command line'''
@@ -78,8 +77,8 @@ def main(args=None):
             copied += len(buf)
             
     log.info('Measuring throughput to cache...')
-    backend_dir = tempfile.mkdtemp()
-    mnt_dir = tempfile.mkdtemp()
+    backend_dir = tempfile.mkdtemp(prefix='s3ql-benchmark-')
+    mnt_dir = tempfile.mkdtemp(prefix='s3ql-mnt')
     atexit.register(shutil.rmtree, backend_dir)
     atexit.register(shutil.rmtree, mnt_dir)
     
@@ -121,7 +120,7 @@ def main(args=None):
     try:
         backend = get_backend(options, plain=True)
     except DanglingStorageURLError as exc:
-        raise QuietError(str(exc))
+        raise QuietError(str(exc)) from None
     
     upload_time = 0
     size = 512 * 1024

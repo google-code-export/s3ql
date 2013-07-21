@@ -6,13 +6,11 @@ Copyright (C) 2008-2010 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-
 from s3ql import inode_cache
 from s3ql.mkfs import init_tables
 from s3ql.metadata import create_tables
 from s3ql.database import Connection
-import unittest2 as unittest
+import unittest
 import time
 import tempfile
 import os
@@ -47,7 +45,7 @@ class cache_tests(unittest.TestCase):
 
         inode = self.cache.create_inode(**attrs)
 
-        for key in attrs.keys():
+        for key in list(attrs.keys()):
             self.assertEqual(attrs[key], getattr(inode, key))
 
         self.assertTrue(self.db.has_val('SELECT 1 FROM inodes WHERE id=?', (inode.id,)))
@@ -80,7 +78,7 @@ class cache_tests(unittest.TestCase):
                 'mtime': time.time() }
 
         inode = self.cache.create_inode(**attrs)
-        for (key, val) in attrs.iteritems():
+        for (key, val) in attrs.items():
             self.assertEqual(getattr(inode, key), val)
 
         # Create another inode
@@ -91,15 +89,7 @@ class cache_tests(unittest.TestCase):
         self.assertEqual(inode, self.cache[inode.id])
 
         # Now it should be out of the cache
-        for _ in xrange(inode_cache.CACHE_SIZE + 1):
+        for _ in range(inode_cache.CACHE_SIZE + 1):
             self.cache.create_inode(**attrs)
 
         self.assertRaises(KeyError, self.cache.__getitem__, inode.id)
-
-
-
-def suite():
-    return unittest.makeSuite(cache_tests)
-
-if __name__ == "__main__":
-    unittest.main()

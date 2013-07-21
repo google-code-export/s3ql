@@ -9,10 +9,7 @@ This program can be distributed under the terms of the GNU GPLv3.
 # Analysis of Cython code not really working yet
 #@PydevCodeAnalysisIgnore
 
-from __future__ import print_function, division
-
 from cpython.long cimport PyLong_AsVoidPtr
-from cpython cimport PyString_FromString
 from cpython.exc cimport PyErr_NoMemory
 from libc.stdio cimport (FILE, const_char, const_void, fclose as fclose_c,
                          fwrite as fwrite_c, fread as fread_c, ftell)
@@ -21,6 +18,10 @@ from libc.errno cimport errno
 from libc.stdlib cimport calloc as calloc_c, free as free_c
 from libc.stdint cimport (int64_t, uint8_t, uint16_t, uint32_t, uint64_t)
 from posix.unistd cimport dup, lseek, SEEK_SET
+
+# These import are not (yet?) in the Cython provided cpython module
+cdef extern from *:
+    object PyUnicode_FromString(const_char *u)
 
 cdef extern from 'stdint.h' nogil:
     enum: UINT8_MAX
@@ -74,56 +75,14 @@ cdef extern from 'sqlite3.h' nogil:
         SQLITE_OPEN_READWRITE
         SQLITE_OPEN_READONLY
 
-from .cleanup_manager import CleanupManager
+from contextlib import ExitStack
 import apsw
 import os
-import logging
+from .logging import logging # Ensure use of custom logger class
 import itertools
+import sys
 
-log = logging.getLogger('deltadump')
-
-def check_sqlite():
-    '''Check if deltadump and apsw module use compatible SQLite code.
-
-    This functions look at versions and compile options of the SQLite
-    code used by the *apsw* module and the *deltadump* module. If they
-    do not match exactly, a `RuntimeError` is raised.
-
-    Only if both modules use the same SQLite version compiled with the
-    same options can the database object be shared between *apsw* and
-    *deltadump*.
-    '''
-    
-    cdef const_char *buf
-
-    apsw_sqlite_version = apsw.sqlitelibversion()
-    s3ql_sqlite_version = PyString_FromString(sqlite3_libversion())
-    log.debug('apsw sqlite version: %s, '
-              's3ql sqlite version: %s',
-              apsw_sqlite_version,
-              s3ql_sqlite_version)
-    if apsw_sqlite_version != s3ql_sqlite_version:
-        raise RuntimeError('SQLite version mismatch between APSW and S3QL '
-                           '(%s vs %s)' % (apsw_sqlite_version, s3ql_sqlite_version))
-    
-    apsw_sqlite_options = set(apsw.compile_options)
-    s3ql_sqlite_options = set()
-    for idx in itertools.count(0):
-        buf = sqlite3_compileoption_get(idx)
-        if buf is NULL:
-            break
-        s3ql_sqlite_options.add(PyString_FromString(buf))
-
-    log.debug('apsw sqlite compile options: %s, '
-              's3ql sqlite compile options: %s',
-              apsw_sqlite_options,
-              s3ql_sqlite_options)
-    if apsw_sqlite_options != s3ql_sqlite_options:
-        raise RuntimeError('SQLite code used by APSW was compiled with different '
-                           'options than SQLite code available to S3QL! '
-                           'Differing settings: + %s, - %s' %
-                           (apsw_sqlite_options - s3ql_sqlite_options,
-                           s3ql_sqlite_options - apsw_sqlite_options))
+log = logging.getLogger(__name__)
 
 # Column types
 cdef int _INTEGER = 1
@@ -152,14 +111,15 @@ cdef inline int fwrite(const_void * buf, size_t len_, FILE * fp) except -1:
     '''Call libc's fwrite() and raise exception on failure'''
 
     if fwrite_c(buf, len_, 1, fp) != 1:
-        raise IOError(errno, strerror(errno))
+        raise_from_errno(IOError)
+
     return len_
 
 cdef inline int fread(void * buf, size_t len_, FILE * fp) except -1:
     '''Call libc's fread() and raise exception on failure'''
 
     if fread_c(buf, len_, 1, fp) != 1:
-        raise IOError(errno, strerror(errno))
+        raise_from_errno(IOError)
     return len_
 
 cdef free(void * ptr):
@@ -172,6 +132,11 @@ cdef free(void * ptr):
     free_c(ptr)
     return None
 
+cdef int raise_from_errno(err_class=OSError) except -1:
+    '''Raise OSError for current errno value'''
+
+    raise err_class(errno, PyUnicode_FromString(strerror(errno)))
+    
 cdef int fclose(FILE * fp) except -1:
     '''Call libc.fclose() and raise exception on failure'''
 
@@ -181,7 +146,7 @@ cdef int fclose(FILE * fp) except -1:
     # important, so that we can safely reposition the fd position
     # below (which is necessary in case there is cached input data)
     if fflush(fp) != 0:
-        raise OSError(errno, strerror(errno))
+        raise_from_errno()
     
     # Reposition FD to position of FILE*, otherwise next read from FD will miss
     # data currently in stream buffer. It seems that call to fflush() achieves
@@ -189,13 +154,13 @@ cdef int fclose(FILE * fp) except -1:
     # on it.
     off = ftell(fp)
     if off == -1:
-        raise OSError(errno, strerror(errno))
+        raise_from_errno()
 
     if lseek(fileno(fp), off, SEEK_SET) != off:
-        raise OSError(errno, strerror(errno))
+        raise_from_errno()
 
     if fclose_c(fp) != 0:
-        raise OSError(errno, strerror(errno))
+        raise_from_errno()
 
     return 0
 
@@ -217,7 +182,7 @@ cdef int SQLITE_CHECK_RC(int rc, int success, sqlite3* db) except -1:
     
     if rc != success:
         exc = apsw.exceptionfor(rc)
-        raise type(exc)(sqlite3_errmsg(db))
+        raise type(exc)(PyUnicode_FromString(sqlite3_errmsg(db)))
 
     return 0
 
@@ -249,20 +214,63 @@ cdef int prep_columns(columns, int** col_types_p, int** col_args_p) except -1:
     col_args_p[0] = col_args
     return col_count
 
-cdef FILE* dup_to_fp(fh, mode) except NULL:
+cdef FILE* dup_to_fp(fh, const_char* mode) except NULL:
     '''Duplicate fd from *fh* and open as FILE*'''
 
     cdef int fd
 
     fd = dup(fh.fileno())
     if fd == -1:
-        raise OSError(errno, strerror(errno))
+        raise_from_errno()
+
     fp = fdopen(fd, mode)
     if fp == NULL:
-        raise OSError(errno, strerror(errno))
+        raise_from_errno()
 
     return fp
 
+def check_sqlite():
+    '''Check if deltadump and apsw module use compatible SQLite code.
+
+    This functions look at versions and compile options of the SQLite
+    code used by the *apsw* module and the *deltadump* module. If they
+    do not match exactly, a `RuntimeError` is raised.
+
+    Only if both modules use the same SQLite version compiled with the
+    same options can the database object be shared between *apsw* and
+    *deltadump*.
+    '''
+    
+    cdef const_char *buf
+
+    apsw_sqlite_version = apsw.sqlitelibversion()
+    s3ql_sqlite_version = PyUnicode_FromString(sqlite3_libversion())
+    log.debug('apsw sqlite version: %s, '
+              's3ql sqlite version: %s',
+              apsw_sqlite_version,
+              s3ql_sqlite_version)
+    if apsw_sqlite_version != s3ql_sqlite_version:
+        raise RuntimeError('SQLite version mismatch between APSW and S3QL '
+                           '(%s vs %s)' % (apsw_sqlite_version, s3ql_sqlite_version))
+    
+    apsw_sqlite_options = set(apsw.compile_options)
+    s3ql_sqlite_options = set()
+    for idx in itertools.count(0):
+        buf = sqlite3_compileoption_get(idx)
+        if buf is NULL:
+            break
+        s3ql_sqlite_options.add(PyUnicode_FromString(buf))
+
+    log.debug('apsw sqlite compile options: %s, '
+              's3ql sqlite compile options: %s',
+              apsw_sqlite_options,
+              s3ql_sqlite_options)
+    if apsw_sqlite_options != s3ql_sqlite_options:
+        raise RuntimeError('SQLite code used by APSW was compiled with different '
+                           'options than SQLite code available to S3QL! '
+                           'Differing settings: + %s, - %s' %
+                           (apsw_sqlite_options - s3ql_sqlite_options,
+                           s3ql_sqlite_options - apsw_sqlite_options))
 
 def dump_table(table, order, columns, db, fh):
     '''Dump *columns* of *table* into *fh*
@@ -301,40 +309,40 @@ def dump_table(table, order, columns, db, fh):
     if db.file == ':memory:':
         raise ValueError("Can't access in-memory databases")
 
-    with CleanupManager(log) as cleanup:
+    with ExitStack() as cm:
         # Get SQLite connection
         log.debug('Opening connection to %s', db.file)
-        SQLITE_CHECK_RC(sqlite3_open_v2(db.file, &sqlite3_db,
+        dbfile_b = db.file.encode(sys.getfilesystemencoding(), 'surrogateescape')
+        SQLITE_CHECK_RC(sqlite3_open_v2(dbfile_b, &sqlite3_db,
                                         SQLITE_OPEN_READONLY, NULL),
                         SQLITE_OK, sqlite3_db)
-        cleanup.register(lambda: SQLITE_CHECK_RC(sqlite3_close(sqlite3_db),
-                                                 SQLITE_OK, sqlite3_db))
+        cm.callback(lambda: SQLITE_CHECK_RC(sqlite3_close(sqlite3_db),
+                                            SQLITE_OK, sqlite3_db))
         SQLITE_CHECK_RC(sqlite3_extended_result_codes(sqlite3_db, 1),
                         SQLITE_OK, sqlite3_db)
 
         # Get FILE* for buffered reading from *fh*
-        fp = dup_to_fp(fh, 'wb')
-        cleanup.register(lambda: fclose(fp))
+        fp = dup_to_fp(fh, b'wb')
+        cm.callback(lambda: fclose(fp))
 
         # Allocate col_args and col_types 
         col_count = prep_columns(columns, &col_types, &col_args)
-        cleanup.register(lambda: free(col_args))
-        cleanup.register(lambda: free(col_types))
+        cm.callback(lambda: free(col_args))
+        cm.callback(lambda: free(col_types))
         
         # Allocate int64_prev
         int64_prev = < int64_t *> calloc(len(columns), sizeof(int64_t))
-        cleanup.register(lambda: free(int64_prev))
+        cm.callback(lambda: free(int64_prev))
 
         # Prepare statement
         col_names = [ x[0] for x in columns ]
         query = ("SELECT %s FROM %s ORDER BY %s " %
-                 (', '.join(col_names), table, order))
+                 (', '.join(col_names), table, order)).encode('utf-8')
         SQLITE_CHECK_RC(sqlite3_prepare_v2(sqlite3_db, query, -1, &stmt, NULL),
                         SQLITE_OK, sqlite3_db)
-        cleanup.register(lambda: SQLITE_CHECK_RC(sqlite3_finalize(stmt),
-                                                 SQLITE_OK, sqlite3_db))
+        cm.callback(lambda: SQLITE_CHECK_RC(sqlite3_finalize(stmt),
+                                            SQLITE_OK, sqlite3_db))
 
-        # Dump or load data as requested
         row_count = db.get_val("SELECT COUNT(rowid) FROM %s" % table)
         log.debug('dump_table(%s): writing %d rows', table, row_count)
         write_integer(row_count, fp)
@@ -408,21 +416,22 @@ def load_table(table, columns, db, fh, trx_rows=5000):
     if db.file == ':memory:':
         raise ValueError("Can't access in-memory databases")
 
-    with CleanupManager(log) as cleanup:
+    with ExitStack() as cm:
         # Get SQLite connection
         log.debug('Opening connection to %s', db.file)
-        SQLITE_CHECK_RC(sqlite3_open_v2(db.file, &sqlite3_db,
+        dbfile_b = db.file.encode(sys.getfilesystemencoding(), 'surrogateescape')
+        SQLITE_CHECK_RC(sqlite3_open_v2(dbfile_b, &sqlite3_db,
                                         SQLITE_OPEN_READWRITE, NULL),
                         SQLITE_OK, sqlite3_db)
-        cleanup.register(lambda: SQLITE_CHECK_RC(sqlite3_close(sqlite3_db),
-                                                 SQLITE_OK, sqlite3_db))
+        cm.callback(lambda: SQLITE_CHECK_RC(sqlite3_close(sqlite3_db),
+                                            SQLITE_OK, sqlite3_db))
         SQLITE_CHECK_RC(sqlite3_extended_result_codes(sqlite3_db, 1),
                         SQLITE_OK, sqlite3_db)
 
         # Copy settings
         for pragma in ('synchronous', 'foreign_keys'):
             val = db.get_val('PRAGMA %s' % pragma)
-            cmd = 'PRAGMA %s = %s' % (pragma, val)
+            cmd = ('PRAGMA %s = %s' % (pragma, val)).encode('utf-8')
             SQLITE_CHECK_RC(sqlite3_prepare_v2(sqlite3_db, cmd, -1, &stmt, NULL),
                             SQLITE_OK, sqlite3_db)
             try:
@@ -434,50 +443,50 @@ def load_table(table, columns, db, fh, trx_rows=5000):
                 SQLITE_CHECK_RC(sqlite3_finalize(stmt), SQLITE_OK, sqlite3_db)
 
         # Get FILE* for buffered reading from *fh*
-        fp = dup_to_fp(fh, 'rb')
-        cleanup.register(lambda: fclose(fp))
+        fp = dup_to_fp(fh, b'rb')
+        cm.callback(lambda: fclose(fp))
 
         # Allocate col_args and col_types 
         col_count = prep_columns(columns, &col_types, &col_args)
-        cleanup.register(lambda: free(col_args))
-        cleanup.register(lambda: free(col_types))
+        cm.callback(lambda: free(col_args))
+        cm.callback(lambda: free(col_types))
 
         # Allocate int64_prev
         int64_prev = < int64_t *> calloc(len(columns), sizeof(int64_t))
-        cleanup.register(lambda: free(int64_prev))
+        cm.callback(lambda: free(int64_prev))
 
         # Prepare INSERT statement
         col_names = [ x[0] for x in columns ]
         query = ("INSERT INTO %s (%s) VALUES(%s)"
-                 % (table, ', '.join(col_names), ', '.join('?' * col_count)))
+                 % (table, ', '.join(col_names),
+                    ', '.join('?' * col_count))).encode('utf-8')
         SQLITE_CHECK_RC(sqlite3_prepare_v2(sqlite3_db, query, -1, &stmt, NULL),
                         SQLITE_OK, sqlite3_db)
-        cleanup.register(lambda: SQLITE_CHECK_RC(sqlite3_finalize(stmt),
+        cm.callback(lambda: SQLITE_CHECK_RC(sqlite3_finalize(stmt),
                                                  SQLITE_OK, sqlite3_db))
 
         # Prepare BEGIN statement
-        query = 'BEGIN TRANSACTION'
+        query = b'BEGIN TRANSACTION'
         SQLITE_CHECK_RC(sqlite3_prepare_v2(sqlite3_db, query, -1, &begin_stmt, NULL),
                         SQLITE_OK, sqlite3_db)
-        cleanup.register(lambda: SQLITE_CHECK_RC(sqlite3_finalize(begin_stmt),
+        cm.callback(lambda: SQLITE_CHECK_RC(sqlite3_finalize(begin_stmt),
                                                  SQLITE_OK, sqlite3_db))
 
         # Prepare COMMIT statement
-        query = 'COMMIT TRANSACTION'
+        query = b'COMMIT TRANSACTION'
         SQLITE_CHECK_RC(sqlite3_prepare_v2(sqlite3_db, query, -1, &commit_stmt, NULL),
                         SQLITE_OK, sqlite3_db)
-        cleanup.register(lambda: SQLITE_CHECK_RC(sqlite3_finalize(commit_stmt),
+        cm.callback(lambda: SQLITE_CHECK_RC(sqlite3_finalize(commit_stmt),
                                                  SQLITE_OK, sqlite3_db))
 
-        # Dump or load data as requested
         buf = calloc(MAX_BLOB_SIZE, 1)
-        cleanup.register(lambda: free(buf))
+        cm.callback(lambda: free(buf))
         read_integer(&row_count, fp)
         log.debug('load_table(%s): reading %d rows', table, row_count)
 
         # Start transaction
         SQLITE_CHECK_RC(sqlite3_step(begin_stmt), SQLITE_DONE, sqlite3_db)
-        cleanup.register(lambda: SQLITE_CHECK_RC(sqlite3_step(commit_stmt),
+        cm.callback(lambda: SQLITE_CHECK_RC(sqlite3_step(commit_stmt),
                                                  SQLITE_DONE, sqlite3_db))
         SQLITE_CHECK_RC(sqlite3_reset(begin_stmt), SQLITE_OK, sqlite3_db)
 

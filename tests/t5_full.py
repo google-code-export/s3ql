@@ -6,31 +6,26 @@ Copyright (C) Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-
-import errno
+from t4_fuse import populate_dir, skip_without_rsync, BASEDIR
+from t1_backends import get_remote_test_info
+import shutil
 import subprocess
 import t4_fuse
-from t4_fuse import populate_dir
 import tempfile
-import unittest2 as unittest
-import shutil
+import sys
+import os
 
-class FullTests(t4_fuse.fuse_tests):
+class FullTest(t4_fuse.fuse_tests):
 
+    def populate_dir(self, path):
+        populate_dir(path)
+        
     def runTest(self):
-        try:
-            subprocess.call(['rsync', '--version'],
-                            stderr=subprocess.STDOUT,
-                            stdout=open('/dev/null', 'wb'))
-        except OSError as exc:
-            if exc.errno == errno.ENOENT:
-                raise unittest.SkipTest('rsync not installed')
-            raise
+        skip_without_rsync()
 
-        ref_dir = tempfile.mkdtemp()
+        ref_dir = tempfile.mkdtemp(prefix='s3ql-ref-')
         try:
-            populate_dir(ref_dir)
+            self.populate_dir(ref_dir)
             
             # Copy source data
             self.mkfs()
@@ -42,15 +37,15 @@ class FullTests(t4_fuse.fuse_tests):
 
             # Delete cache, run fsck and compare
             shutil.rmtree(self.cache_dir)
-            self.cache_dir = tempfile.mkdtemp()
+            self.cache_dir = tempfile.mkdtemp('s3ql-cache-')
             self.fsck()
             self.mount()
-            rsync = subprocess.Popen(['rsync', '-anciHAX', '--delete',
-                                      '--exclude', '/lost+found',
-                                      ref_dir + '/', self.mnt_dir + '/'],
-                                     stdout=subprocess.PIPE,
-                                     stderr=subprocess.STDOUT)
-            out = rsync.communicate()[0]
+            with subprocess.Popen(['rsync', '-anciHAX', '--delete',
+                                   '--exclude', '/lost+found',
+                                   ref_dir + '/', self.mnt_dir + '/'],
+                                  stdout=subprocess.PIPE, universal_newlines=True,
+                                  stderr=subprocess.STDOUT) as rsync:
+                out = rsync.communicate()[0]
             if out:
                 self.fail('Copy not equal to original, rsync says:\n' + out)
             elif rsync.returncode != 0:
@@ -60,19 +55,58 @@ class FullTests(t4_fuse.fuse_tests):
 
             # Delete cache and mount
             shutil.rmtree(self.cache_dir)
-            self.cache_dir = tempfile.mkdtemp()
+            self.cache_dir = tempfile.mkdtemp(prefix='s3ql-cache-')
             self.mount()
             self.umount()
-
 
         finally:
             shutil.rmtree(ref_dir)
 
 
-# Somehow important according to pyunit documentation
-def suite():
-    return unittest.makeSuite(FullTests)
+class RemoteTest:
+    def setUp(self, name):
+        super().setUp()
+        (backend_login, backend_pw,
+         self.storage_url) = get_remote_test_info(name, self.skipTest)
+        self.backend_login = backend_login
+        self.backend_passphrase = backend_pw
 
-# Allow calling from command line
-if __name__ == "__main__":
-    unittest.main()
+    def populate_dir(self, path):
+        populate_dir(path, entries=50, size=5*1024*1024)
+
+    def tearDown(self):
+        super().tearDown()
+    
+        proc = subprocess.Popen([sys.executable, os.path.join(BASEDIR, 'bin', 's3qladm'),
+                                 '--quiet', '--authfile', '/dev/null', '--fatal-warnings',
+                                 'clear', self.storage_url ],
+                                stdin=subprocess.PIPE, universal_newlines=True)
+        if self.backend_login is not None:
+            print(self.backend_login, file=proc.stdin)
+            print(self.backend_passphrase, file=proc.stdin)
+        print('yes', file=proc.stdin)
+        proc.stdin.close()
+
+        self.assertEqual(proc.wait(), 0)
+
+        
+class S3FullTest(RemoteTest, FullTest):
+    def setUp(self):
+        super().setUp('s3-test')
+
+class GSFullTest(RemoteTest, FullTest):
+    def setUp(self):
+        super().setUp('gs-test')
+        
+class S3CFullTest(RemoteTest, FullTest):
+    def setUp(self):
+        super().setUp('s3c-test')
+
+class SwiftFullTest(RemoteTest, FullTest):
+    def setUp(self):
+        super().setUp('swift-test')
+        
+class RackspaceFullTest(RemoteTest, FullTest):
+    def setUp(self):
+        super().setUp('rackspace-test')
+            

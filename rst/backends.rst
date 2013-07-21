@@ -115,51 +115,48 @@ containers. *prefix* can be an arbitrary prefix that will be prepended
 to all object names used by S3QL. This allows you to store several
 S3QL file systems in the same container.
 
-The OpenStack backend always uses HTTPS connections. Note, however,
-that at this point S3QL does not verify the server certificate (cf.
-`issue 267 <http://code.google.com/p/s3ql/issues/detail?id=267>`_).
-
 .. _OpenStack: http://www.openstack.org/
 .. _Swift: http://openstack.org/projects/storage/
 
 
-RackSpace CloudFiles
+Rackspace CloudFiles
 ====================
 
-RackSpace_ CloudFiles uses OpenStack internally, so you can use the
-OpenStack/Swift backend (see above). The hostname for CloudFiles
-containers is ``auth.api.rackspacecloud.com``. Use your normal
-RackSpace user name for the backend login, and your RackSpace API key
-as the backend passphrase. You can create a storage container for S3QL
-using the `Control Panel <https://manage.rackspacecloud.com/>`_ (go to
-*Cloud Files* under *Hosting*).
+Rackspace_ CloudFiles uses OpenStack_ internally, so it is possible to
+just use the OpenStack/Swift backend (see above) with
+``auth.api.rackspacecloud.com`` as the host name and your rackspace
+API key as the backend passphrase. However, in this case you are
+restricted to using containers in the default storage region.
+
+To access containers in other storage regions, there is a special
+``rackspace`` backend that uses a storage URL of the form ::
+
+   rackspace://<region>/<container>[/<prefix>]
+
+The storage container must already exist in the selected
+region. *prefix* can be an arbitrary prefix that will be prepended to
+all object names used by S3QL and can be used to store several S3QL
+file systems in the same container.
+
+You can create a storage container for S3QL using the `Cloud Control
+Panel <https://mycloud.rackspace.com/>`_ (click on *Files* in the
+topmost menu bar).
 
 
-.. WARNING::
+.. NOTE::
 
-   As of January 2012, RackSpace does not give any information about
-   data consistency or data durability on their web page. However,
-   RackSpace support agents (especially in the live chat) often claim
-   very high guarantees. Any such statement is wrong. As of 01/2012,
-   RackSpace CloudFiles does *not* give *any* durability or
+   As of January 2012, Rackspace does not give any durability or
    consistency guarantees (see :ref:`durability` for why this is
-   important). Why this fact is only acknowledged RackSpace's
-   technical engineers, and/or not communicated to their sales agents
-   is not known.
-   
-You should note that opinions about RackSpace differ widely among S3QL
-users and developers. On one hand, people praise RackSpace for their
-backing of the (open source) OpenStack project. On the other hand,
-their heavily advertised "fanatical support" is in practice often not
-only `less than helpful
-<http://code.google.com/p/s3ql/issues/detail?id=243#c5>`_, but their
-support agents also seem to be `downright incompetent
-<http://code.google.com/p/s3ql/issues/detail?id=243#c11>`_. However,
-there are reports that the support quality increases dramatically once
-you are a customer and use the "Live Chat" link when you are logged
-into the control panel.
+   important).  However, Rackspace support agents seem prone to claim
+   very high guarantees.  Unless explicitly backed by their terms of
+   service, any such statement should thus be viewed with
+   suspicion. S3QL developers have also `repeatedly experienced
+   <http://www.rath.org/Tales%20from%20the%20Rackspace%20Support>`_
+   similar issues with the credibility and competence of the Rackspace
+   support.
 
-.. _RackSpace: http://www.rackspace.com/
+
+.. _Rackspace: http://www.rackspace.com/
 
 
 S3 compatible
@@ -182,7 +179,7 @@ Local
 S3QL is also able to store its data on the local file system. This can
 be used to backup data on external media, or to access external
 services that S3QL can not talk to directly (e.g., it is possible to
-store data over SSH by first mounting the remote system using `sshfs`_
+store data over SSH by first mounting the remote system using sshfs_
 and then using the local backend to store the data in the sshfs
 mountpoint).
 
@@ -198,3 +195,5 @@ file (see :ref:`authinfo`) is read, i.e. if you are in the
 corresponding section in the authentication file must match the
 storage url `local:///home/john/s3ql`.
 
+
+.. _sshfs: http://fuse.sourceforge.net/sshfs.html

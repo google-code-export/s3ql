@@ -6,12 +6,10 @@ Copyright (C) 2008-2010 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-
-import logging
+from .logging import logging # Ensure use of custom logger class
 from .database import NoSuchRowError
 
-log = logging.getLogger('inode_cache')
+log = logging.getLogger(__name__)
 
 CACHE_SIZE = 100
 ATTRIBUTES = ('mode', 'refcount', 'uid', 'gid', 'size', 'locked',
@@ -29,7 +27,7 @@ class _Inode(object):
     __slots__ = ATTRIBUTES + ('dirty', 'generation')
 
     def __init__(self, generation):
-        super(_Inode, self).__init__()
+        super().__init__()
         self.dirty = False
         self.generation = generation
 
@@ -59,16 +57,14 @@ class _Inode(object):
             return getattr(self, key[3:])
 
     def __eq__(self, other):
-        if not isinstance(other, _Inode):
-            return NotImplemented
+        # Ill defined - should we compare the inode id or all the attributes?
+        # What does it even mean to have the same id but different attributes?
+        # Maybe we should we raise an Exception in that case?
+        return NotImplemented
 
-        for attr in ATTRIBUTES:
-            if getattr(self, attr) != getattr(other, attr):
-                return False
-
-        return True
-
-
+    def __hash__(self):
+        return self.id
+        
     def copy(self):
         copy = _Inode(self.generation)
 
@@ -128,7 +124,7 @@ class InodeCache(object):
 
         # Fill the cache with dummy data, so that we don't have to
         # check if the cache is full or not (it will always be full)        
-        for _ in xrange(CACHE_SIZE):
+        for _ in range(CACHE_SIZE):
             self.cached_rows.append(None)
 
         self.pos = 0
@@ -149,7 +145,7 @@ class InodeCache(object):
             try:
                 inode = self.getattr(id_)
             except NoSuchRowError:
-                raise KeyError('No such inode: %d' % id_)
+                raise KeyError('No such inode: %d' % id_) from None
 
             old_id = self.cached_rows[self.pos]
             self.cached_rows[self.pos] = id_
@@ -206,9 +202,9 @@ class InodeCache(object):
             self.setattr(self.attrs[id_])
 
     def destroy(self):
-        '''Finalize cache'''
+        '''Flush all entries and empty cache'''
 
-        for i in xrange(len(self.cached_rows)):
+        for i in range(len(self.cached_rows)):
             id_ = self.cached_rows[i]
             self.cached_rows[i] = None
             if id_ is not None:
@@ -221,15 +217,14 @@ class InodeCache(object):
                     del self.attrs[id_]
                     self.setattr(inode)
 
-        self.cached_rows = None
-        self.attrs = None
+        assert len(self.attrs) == 0
 
     def flush(self):
         '''Flush all entries to database'''
 
         # We don't want to use dict.itervalues() since
         # the dict may change while we iterate
-        for i in xrange(len(self.cached_rows)):
+        for i in range(len(self.cached_rows)):
             id_ = self.cached_rows[i]
             if id_ is not None:
                 try:
@@ -241,8 +236,8 @@ class InodeCache(object):
                     self.setattr(inode)
 
     def __del__(self):
-        if self.attrs:
-            raise RuntimeError('InodeCache instance was destroyed without calling close()')
+        if len(self.attrs) > 0:
+            raise RuntimeError('InodeCache instance was destroyed without calling destroy()')
 
 
 

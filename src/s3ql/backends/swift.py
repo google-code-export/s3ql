@@ -6,37 +6,37 @@ Copyright (C) Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-from ..common import QuietError, BUFSIZE
+from ..logging import logging # Ensure use of custom logger class
+from ..common import QuietError, BUFSIZE, PICKLE_PROTOCOL, md5sum
 from .common import (AbstractBackend, NoSuchObject, retry, AuthorizationError, http_connection, 
-    DanglingStorageURLError)
-from .s3c import HTTPError, BadDigestError
-from s3ql.backends.common import is_temp_network_error
-from urlparse import urlsplit
-import hashlib
+    DanglingStorageURLError, is_temp_network_error, ChecksumError, retry_generator)
+from .s3c import HTTPError, ObjectR, ObjectW, HTTPResponse
+from ..inherit_docstrings import (copy_ancestor_docstring, prepend_ancestor_docstring,
+                                  ABCDocstMeta)
+from urllib.parse import urlsplit
+from base64 import b64encode, b64decode
 import json
-import logging
 import re
-import tempfile
-import time
-import urllib
+import io
+import pickle
+import urllib.parse
 
-log = logging.getLogger("backend.swift")
+log = logging.getLogger(__name__)
 
-class Backend(AbstractBackend):
+class Backend(AbstractBackend, metaclass=ABCDocstMeta):
     """A backend to store data in OpenStack Swift
     
     The backend guarantees get after create consistency, i.e. a newly created
     object will be immediately retrievable. 
     """
 
-    def __init__(self, storage_url, login, password, use_ssl=True):
+    def __init__(self, storage_url, login, password, ssl_context):
         # Unused argument
         #pylint: disable=W0613
         
-        super(Backend, self).__init__()
+        super().__init__()
 
-        (host, port, container_name, prefix) = self._parse_storage_url(storage_url)
+        (host, port, container_name, prefix) = self._parse_storage_url(storage_url, ssl_context)
             
         self.hostname = host
         self.port = port
@@ -47,9 +47,13 @@ class Backend(AbstractBackend):
         self.auth_token = None
         self.auth_prefix = None
         self.conn = None
+        self.ssl_context = ssl_context
         
         self._container_exists()
-    
+
+    def __str__(self):
+        return 'swift container %s, prefix %s' % (self.container_name, self.prefix)
+        
     @retry
     def _container_exists(self):
         '''Make sure that the container exists'''
@@ -58,12 +62,12 @@ class Backend(AbstractBackend):
             resp = self._do_request('GET', '/', query_string={'limit': 1 })
         except HTTPError as exc:
             if exc.status == 404:
-                raise DanglingStorageURLError(self.container_name)
+                raise DanglingStorageURLError(self.container_name) from None
             raise
         resp.read()   
                     
     @staticmethod
-    def _parse_storage_url(storage_url):
+    def _parse_storage_url(storage_url, ssl_context):
         '''Extract information from storage URL
         
         Return a tuple *(host, port, container_name, prefix)* .
@@ -79,25 +83,20 @@ class Backend(AbstractBackend):
             raise QuietError('Invalid storage URL')
 
         hostname = hit.group(1)
-        port = int(hit.group(2) or '443')
+        if hit.group(2):
+            port = int(hit.group(2))
+        elif ssl_context:
+            port = 443
+        else:
+            port = 80
         containername = hit.group(3)
         prefix = hit.group(4) or ''
         
         return (hostname, port, containername, prefix)
 
+    @copy_ancestor_docstring
     def is_temp_failure(self, exc): #IGNORE:W0613
-        '''Return true if exc indicates a temporary error
-    
-        Return true if the given exception indicates a temporary problem. Most instance methods
-        automatically retry the request in this case, so the caller does not need to worry about
-        temporary failures.
-        
-        However, in same cases (e.g. when reading or writing an object), the request cannot
-        automatically be retried. In these case this method can be used to check for temporary
-        problems and so that the request can be manually restarted if applicable.
-        '''
-
-        if isinstance(exc, (AuthenticationExpired,)):
+        if isinstance(exc, AuthenticationExpired):
             return True
 
         elif isinstance(exc, HTTPError) and exc.status >= 500 and exc.status <= 599:
@@ -113,7 +112,7 @@ class Backend(AbstractBackend):
 
         log.debug('_get_conn(): start')
         
-        conn = http_connection(self.hostname, self.port, ssl=True)
+        conn = http_connection(self.hostname, self.port, self.ssl_context)
         headers={ 'X-Auth-User': self.login,
                   'X-Auth-Key': self.password }
         
@@ -137,10 +136,10 @@ class Backend(AbstractBackend):
             #pylint: disable=E1103                
             self.auth_token = resp.getheader('X-Auth-Token')
             o = urlsplit(resp.getheader('X-Storage-Url'))
-            self.auth_prefix = urllib.unquote(o.path)
+            self.auth_prefix = urllib.parse.unquote(o.path)
             conn.close()
 
-            return http_connection(o.hostname, o.port, ssl=True)
+            return http_connection(o.hostname, o.port, self.ssl_context)
         
         raise RuntimeError('No valid authentication path found')
     
@@ -159,15 +158,20 @@ class Backend(AbstractBackend):
 
         if not body:
             headers['content-length'] = '0'
+        elif isinstance(body, (str, bytes, bytearray, memoryview)):
+            if isinstance(body, str):
+                body = body.encode('ascii')
+            headers['content-length'] = '%d' % (len(body))
+            headers['content-md5'] = b64encode(md5sum(body)).decode('ascii')
 
         if self.conn is None:
             log.debug('_do_request(): no active connection, calling _get_conn()')
             self.conn =  self._get_conn()
                         
         # Construct full path
-        path = urllib.quote('%s/%s%s' % (self.auth_prefix, self.container_name, path))
+        path = urllib.parse.quote('%s/%s%s' % (self.auth_prefix, self.container_name, path))
         if query_string:
-            s = urllib.urlencode(query_string, doseq=True)
+            s = urllib.parse.urlencode(query_string, doseq=True)
             if subres:
                 path += '?%s&%s' % (subres, s)
             else:
@@ -179,14 +183,37 @@ class Backend(AbstractBackend):
         headers['X-Auth-Token'] = self.auth_token
     
         try:
-            log.debug('_do_request(): %s %s', method, path)
-            self.conn.request(method, path, body, headers)
+            if body is None or isinstance(body, bytes):
+                # Easy case, small or no payload
+                log.debug('_send_request(): processing request for %s', path)
+                self.conn.request(method, path, body, headers)
+                resp = self.conn.getresponse()
+            else:
+                # Potentially big message body, so we use 100-continue
+                log.debug('_send_request(): sending request for %s', path)
+                self.conn.putrequest(method, path)
+                headers['expect'] = '100-continue'
+                for (hdr, value) in headers.items():
+                    self.conn.putheader(hdr, value)
+                self.conn.endheaders(None)
 
-            log.debug('_do_request(): Reading response..')
-            resp = self.conn.getresponse()
-        except:
-            # We probably can't use the connection anymore
-            self.conn.close()
+                log.debug('_send_request(): Waiting for 100-cont..')
+
+                # Sneak in our own response class as instance variable,
+                # so that it knows about the body that still needs to
+                # be sent...
+                resp = HTTPResponse(self.conn.sock, body)
+                native_response_class = self.conn.response_class
+                try:
+                    self.conn.response_class = resp
+                    assert self.conn.getresponse() is resp
+                finally:
+                    self.conn.response_class = native_response_class
+            
+        except Exception as exc:
+            if is_temp_network_error(exc):
+                # We probably can't use the connection anymore
+                self.conn.close()
             raise
     
         # We need to call read() at least once for httplib to consider this
@@ -212,11 +239,8 @@ class Backend(AbstractBackend):
             raise HTTPError(resp.status, resp.reason, resp.getheaders(), resp.read())
      
     @retry 
+    @copy_ancestor_docstring
     def lookup(self, key):
-        """Return metadata for given key.
-
-        If the key does not exist, `NoSuchObject` is raised.
-        """
         log.debug('lookup(%s)', key)
 
         try:
@@ -224,16 +248,15 @@ class Backend(AbstractBackend):
             assert resp.length == 0
         except HTTPError as exc:
             if exc.status == 404:
-                raise NoSuchObject(key)
+                raise NoSuchObject(key) from None
             else:
                 raise
 
         return extractmeta(resp)
 
     @retry
+    @copy_ancestor_docstring
     def get_size(self, key):
-        '''Return size of object stored under *key*'''
-
         log.debug('get_size(%s)', key)
 
         try:
@@ -241,7 +264,7 @@ class Backend(AbstractBackend):
             assert resp.length == 0
         except HTTPError as exc:
             if exc.status == 404:
-                raise NoSuchObject(key)
+                raise NoSuchObject(key) from None
             else:
                 raise
 
@@ -251,46 +274,42 @@ class Backend(AbstractBackend):
         raise RuntimeError('HEAD request did not return Content-Length')
     
     @retry
+    @copy_ancestor_docstring
     def open_read(self, key):
-        ''''Open object for reading
-
-        Return a tuple of a file-like object. Backend contents can be read from
-        the file-like object, metadata is stored in its *metadata* attribute and
-        can be modified by the caller at will. The object must be closed explicitly.
-        '''
-
         try:
             resp = self._do_request('GET', '/%s%s' % (self.prefix, key))
         except HTTPError as exc:
             if exc.status == 404:
-                raise NoSuchObject(key)
+                raise NoSuchObject(key) from None
             raise
 
         return ObjectR(key, resp, self, extractmeta(resp))
 
+    @prepend_ancestor_docstring
     def open_write(self, key, metadata=None, is_compressed=False):
-        """Open object for writing
-
-        `metadata` can be a dict of additional attributes to store with the object. Returns a file-
-        like object. The object must be closed explicitly. After closing, the *get_obj_size* may be
-        used to retrieve the size of the stored object (which may differ from the size of the
-        written data).
-        
-        The *is_compressed* parameter indicates that the caller is going to write compressed data,
-        and may be used to avoid recompression by the backend.
         """
-        
+        The returned object will buffer all data and only start the upload
+        when its `close` method is called.
+        """
         log.debug('open_write(%s): start', key)
+        
+        # We don't store the metadata keys directly, because HTTP headers
+        # are case insensitive (so the server may change capitalization)
+        # and we may run into length restrictions.
+        meta_buf = b64encode(pickle.dumps(metadata, PICKLE_PROTOCOL)).decode('us-ascii')
 
+        chunksize = 255
+        i = 0
         headers = dict()
-        if metadata:
-            for (hdr, val) in metadata.iteritems():
-                headers['X-Object-Meta-%s' % hdr] = val
+        headers['X-Object-Meta-Format'] = 'pickle'
+        while i*chunksize < len(meta_buf):
+            headers['X-Object-Meta-Data-%02d' % i] = meta_buf[i*chunksize:(i+1)*chunksize]
+            i += 1
 
         return ObjectW(key, self, headers)
 
+    @copy_ancestor_docstring
     def clear(self):
-        """Delete all objects in backend"""
         
         # We have to cache keys, because otherwise we can't use the
         # http connection to delete keys.
@@ -304,31 +323,21 @@ class Backend(AbstractBackend):
             self.delete(s3key, True)
 
     @retry
+    @copy_ancestor_docstring
     def delete(self, key, force=False):
-        """Delete object stored under `key`
-
-        ``backend.delete(key)`` can also be written as ``del backend[key]``.
-        If `force` is true, do not return an error if the key does not exist.
-        """
-
         log.debug('delete(%s)', key)
         try:
             resp = self._do_request('DELETE', '/%s%s' % (self.prefix, key))
             assert resp.length == 0
         except HTTPError as exc:
             if exc.status == 404 and not force:
-                raise NoSuchObject(key)
+                raise NoSuchObject(key) from None
             elif exc.status != 404:
                 raise
 
     @retry
+    @copy_ancestor_docstring
     def copy(self, src, dest):
-        """Copy data stored under key `src` to key `dest`
-        
-        If `dest` already exists, it will be overwritten. The copying
-        is done on the remote side. 
-        """
-
         log.debug('copy(%s, %s): start', src, dest)
 
         try:
@@ -339,59 +348,16 @@ class Backend(AbstractBackend):
             resp.read()
         except HTTPError as exc:
             if exc.status == 404:
-                raise NoSuchObject(src)
+                raise NoSuchObject(src) from None
             raise
 
-    def list(self, prefix=''):
-        '''List keys in backend
-
-        Returns an iterator over all keys in the backend. This method
-        handles temporary errors.
-        '''
-
-        log.debug('list(%s): start', prefix)
-
-        marker = ''
-        waited = 0
-        interval = 1 / 50
-        iterator = self._list(prefix, marker)
-        while True:
-            try:
-                marker = iterator.next()
-                waited = 0
-            except StopIteration:
-                break
-            except Exception as exc:
-                if not self.is_temp_failure(exc):
-                    raise
-                if waited > 60 * 60:
-                    log.error('list(): Timeout exceeded, re-raising %s exception', 
-                              type(exc).__name__)
-                    raise
-
-                log.info('Encountered %s exception (%s), retrying call to swift.Backend.list()',
-                          type(exc).__name__, exc)
-                
-                if hasattr(exc, 'retry_after') and exc.retry_after:
-                    interval = exc.retry_after
-                                    
-                time.sleep(interval)
-                waited += interval
-                interval = min(5*60, 2*interval)
-                iterator = self._list(prefix, marker)
-
-            else:
-                yield marker
-
-    def _list(self, prefix='', start='', batch_size=5000):
-        '''List keys in backend, starting with *start*
-
-        Returns an iterator over all keys in the backend. This method
-        does not retry on errors.
-        '''
+    @retry_generator
+    @copy_ancestor_docstring
+    def list(self, prefix='', start_after='', batch_size=5000):
+        log.debug('list(%s, %s): start', prefix, start_after)
 
         keys_remaining = True
-        marker = start
+        marker = start_after
         prefix = self.prefix + prefix
         
         while keys_remaining:
@@ -404,7 +370,7 @@ class Backend(AbstractBackend):
                                                                   'limit': batch_size })
             except HTTPError as exc:
                 if exc.status == 404:
-                    raise DanglingStorageURLError(self.container_name)
+                    raise DanglingStorageURLError(self.container_name) from None
                 raise
             
             if resp.status == 204:
@@ -415,178 +381,66 @@ class Backend(AbstractBackend):
             strip = len(self.prefix)
             count = 0
             try:
-                for dataset in json.load(resp):
+                text_resp = io.TextIOWrapper(resp, encoding='utf-8')
+                for dataset in json.load(text_resp):
                     count += 1
-                    marker = dataset['name'].encode('utf-8')
+                    marker = dataset['name']
                     yield marker[strip:]
                 
             except GeneratorExit:
                 # Need to read rest of response
                 while True:
                     buf = resp.read(BUFSIZE)
-                    if buf == '':
+                    if buf == b'':
                         break
                 break
             
             keys_remaining = count == batch_size 
 
-            
-class ObjectW(object):
-    '''A SWIFT object open for writing
-    
-    All data is first cached in memory, upload only starts when
-    the close() method is called.
-    '''
-
-    def __init__(self, key, backend, headers):
-        self.key = key
-        self.backend = backend
-        self.headers = headers
-        self.closed = False
-        self.obj_size = 0
-        self.fh = tempfile.TemporaryFile(bufsize=0) # no Python buffering
-
-        # False positive, hashlib *does* have md5 member
-        #pylint: disable=E1101        
-        self.md5 = hashlib.md5()
-
-    def write(self, buf):
-        '''Write object data'''
-
-        self.fh.write(buf)
-        self.md5.update(buf)
-        self.obj_size += len(buf)
-
-    def is_temp_failure(self, exc):
-        return self.backend.is_temp_failure(exc)
-
-    @retry
+    @copy_ancestor_docstring
     def close(self):
-        '''Close object and upload data'''
-
-        # Access to protected member ok
-        #pylint: disable=W0212
-
-        log.debug('ObjectW(%s).close(): start', self.key)
-
-        self.closed = True
-        self.headers['Content-Length'] = self.obj_size
-        self.headers['Content-Type'] = 'application/octet-stream'
-
-        self.fh.seek(0)
-        resp = self.backend._do_request('PUT', '/%s%s' % (self.backend.prefix, self.key),
-                                       headers=self.headers, body=self.fh)
-        etag = resp.getheader('ETag').strip('"')
-        resp.read()
-
-        if etag != self.md5.hexdigest():
-            log.warn('ObjectW(%s).close(): MD5 mismatch (%s vs %s)', self.key, etag,
-                     self.md5.hexdigest)
-            try:
-                self.backend.delete(self.key)
-            except:
-                log.exception('Objectw(%s).close(): unable to delete corrupted object!',
-                              self.key)            
-            raise BadDigestError('BadDigest', 'Received ETag does not agree with our calculations.')
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        self.close()
-        return False
-
-    def get_obj_size(self):
-        if not self.closed:
-            raise RuntimeError('Object must be closed first.')
-        return self.obj_size   
-    
-class ObjectR(object):
-    '''A SWIFT object opened for reading'''
-
-    def __init__(self, key, resp, backend, metadata=None):
-        self.key = key
-        self.resp = resp
-        self.md5_checked = False
-        self.backend = backend
-        self.metadata = metadata
-
-        # False positive, hashlib *does* have md5 member
-        #pylint: disable=E1101        
-        self.md5 = hashlib.md5()
-
-    def read(self, size=None):
-        '''Read object data
-        
-        For integrity checking to work, this method has to be called until
-        it returns an empty string, indicating that all data has been read
-        (and verified).
-        '''
-
-        # chunked encoding handled by httplib
-        buf = self.resp.read(size)
-
-        # Check MD5 on EOF
-        if not buf and not self.md5_checked:
-            etag = self.resp.getheader('ETag').strip('"')
-            self.md5_checked = True
-            
-            # Apparently sometimes the response is not closed even when all data has been read. In
-            # that case, the next request can still be send, but an attempt to retrieve the next
-            # response will result in an ResponseNotReady() exception:
-            # http://code.google.com/p/s3ql/issues/detail?id=358
-            # This code attempts to produce additional debug information when that happens,
-            # so that we can figure out what exactly is going wrong.
-            if not self.resp.isclosed():
-                log.error('ObjectR.read(): response not closed after end of data, '
-                          'please report on http://code.google.com/p/s3ql/issues/')
-                log.error('Method: %s, chunked: %s, read length: %s '
-                          'response length: %s, chunk_left: %s, status: %d '
-                          'reason "%s", version: %s, will_close: %s',
-                          self.resp._method, self.resp.chunked, size, self.resp.length,
-                          self.resp.chunk_left, self.resp.status, self.resp.reason,
-                          self.resp.version, self.resp.will_close)                
-                self.resp.close() 
-                            
-            if etag != self.md5.hexdigest():
-                log.warn('ObjectR(%s).close(): MD5 mismatch: %s vs %s', self.key, etag,
-                         self.md5.hexdigest())
-                raise BadDigestError('BadDigest', 'ETag header does not agree with calculated MD5')
-            return buf
-
-        self.md5.update(buf)
-        return buf
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def close(self):
-        '''Close object'''
-
-        pass    
-    
+        self.conn.close()
     
 def extractmeta(resp):
     '''Extract metadata from HTTP response object'''
 
     meta = dict()
+    format_ = 'raw'
     for (name, val) in resp.getheaders():
+        # HTTP headers are case-insensitive and pre 2.x S3QL versions metadata
+        # names verbatim (and thus loose capitalization info), so we force lower
+        # case (since we know that this is the original capitalization).
+        name = name.lower()
+
         hit = re.match(r'^X-Object-Meta-(.+)$', name, re.IGNORECASE)
         if not hit:
             continue
-        meta[hit.group(1)] = val
 
-    return meta
+        if hit.group(1).lower() == 'format':
+            format_ = val
+        else:
+            log.debug('read %s: %s', hit.group(1), val)
+            meta[hit.group(1)] = val
+
+    if format_ == 'pickle':
+        buf = ''.join(meta[x] for x in sorted(meta)
+                      if x.lower().startswith('data-'))
+        try:
+            return pickle.loads(b64decode(buf))
+        except pickle.UnpicklingError as exc:
+            if (isinstance(exc.args[0], str)
+                and exc.args[0].startswith('invalid load key')):
+                raise ChecksumError('Invalid metadata') from None
+            raise
+    else:
+        return meta
 
 
 class AuthenticationExpired(Exception):
     '''Raised if the provided Authentication Token has expired'''
 
     def __init__(self, msg):
-        super(AuthenticationExpired, self).__init__()
+        super().__init__()
         self.msg = msg
 
     def __str__(self):

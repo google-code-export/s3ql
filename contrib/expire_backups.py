@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 '''
 expire_backups.py - this file is part of S3QL (http://s3ql.googlecode.com)
 
@@ -7,16 +7,12 @@ Copyright (C) Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-
-
 import sys
 import os
-import logging
 import re
 import textwrap
 import shutil
-import cPickle as pickle
+import pickle as pickle
 from datetime import datetime, timedelta
 from collections import defaultdict
 
@@ -27,12 +23,12 @@ if (os.path.exists(os.path.join(basedir, 'setup.py')) and
     os.path.exists(os.path.join(basedir, 'src', 's3ql', '__init__.py'))):
     sys.path = [os.path.join(basedir, 'src')] + sys.path
 
-from s3ql.common import setup_logging, QuietError
+from s3ql.logging import setup_logging, QuietError, logging
+from s3ql.common import PICKLE_PROTOCOL
 from s3ql.parse_args import ArgumentParser
 from s3ql.remove import main as s3qlrm
 
-log = logging.getLogger('expire_backups')
-
+log = logging.getLogger(__name__)
 
 def parse_args(args):
     '''Parse command line'''
@@ -98,13 +94,13 @@ def main(args=None):
         if not options.reconstruct_state:
             raise QuietError('Found more than one backup but no state file! Aborting.')
 
-        log.warn('Trying to reconstruct state file..')
+        log.warning('Trying to reconstruct state file..')
         state = upgrade_to_state(backup_list)
         if not options.n:
             log.info('Saving reconstructed state..')
-            pickle.dump(state, open(options.state, 'wb'), pickle.HIGHEST_PROTOCOL)
+            pickle.dump(state, open(options.state, 'wb'), PICKLE_PROTOCOL)
     elif not os.path.exists(options.state):
-        log.warn('Creating state file..')
+        log.warning('Creating state file..')
         state = dict()
     else:
         log.info('Reading state...')
@@ -124,7 +120,7 @@ def main(args=None):
         log.info('Dry run, not saving state.')
     else:
         log.info('Saving state..')
-        pickle.dump(state, open(options.state, 'wb'), pickle.HIGHEST_PROTOCOL)
+        pickle.dump(state, open(options.state, 'wb'), PICKLE_PROTOCOL)
 
 def upgrade_to_state(backup_list):
     log.info('Several existing backups detected, trying to convert absolute ages to cycles')
@@ -135,8 +131,8 @@ def upgrade_to_state(backup_list):
         age[x] = now - datetime.strptime(x, '%Y-%m-%d_%H:%M:%S')
         log.info('Backup %s is %s hours old', x, age[x])
 
-    deltas = [ abs(x - y) for x in age.itervalues()
-                          for y in age.itervalues() if x != y ]
+    deltas = [ abs(x - y) for x in age.values()
+                          for y in age.values() if x != y ]
     step = min(deltas)
     log.info('Assuming backup interval of %s hours', step)
 
@@ -158,7 +154,7 @@ def simulate(args):
 
     state = dict()
     backup_list = set()
-    for i in xrange(50):
+    for i in range(50):
         backup_list.add('backup-%2d' % i)
         delete = process_backups(backup_list, state, options.cycles)
         log.info('Deleting %s', delete)
@@ -184,7 +180,7 @@ def process_backups(backup_list, state, cycles):
     # Missing backups
     missing_backups = set(state) - backup_list
     for x in missing_backups:
-        log.warn('Warning: backup %s is missing. Did you delete it manually?', x)
+        log.warning('Warning: backup %s is missing. Did you delete it manually?', x)
         del state[x]
 
     # Ranges
@@ -196,7 +192,7 @@ def process_backups(backup_list, state, cycles):
     simstate = dict()
     keep = set()
     missing = defaultdict(list)
-    for step in xrange(max(cycles)):
+    for step in range(max(cycles)):
 
         log.debug('Considering situation after %d more backups', step)
         for x in simstate:
@@ -212,7 +208,7 @@ def process_backups(backup_list, state, cycles):
 
             # Look in simstate
             found = False
-            for (backup, age) in simstate.iteritems():
+            for (backup, age) in simstate.items():
                 if min_ <= age < max_:
                     found = True
                     break
@@ -223,7 +219,7 @@ def process_backups(backup_list, state, cycles):
                 continue
 
             # Look in state
-            for (backup, age) in state.iteritems():
+            for (backup, age) in state.items():
                 age += step
                 if min_ <= age < max_:
                     log.info('Keeping backup %s (current age %d) for age range %d to %d%s',
