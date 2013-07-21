@@ -6,16 +6,12 @@ Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-
-import errno
 import llfuse
 import os.path
 import s3ql.lock
 import s3ql.remove
 import sys
 import t4_fuse
-import unittest2 as unittest
 
 class LockRemoveTests(t4_fuse.fuse_tests):
 
@@ -43,14 +39,11 @@ class LockRemoveTests(t4_fuse.fuse_tests):
             self.fail("s3qllock raised exception")
 
         # Try to delete
-        with self.assertRaises(OSError) as cm:
-            os.unlink(filename)
-        self.assertEqual(cm.exception[0], errno.EPERM)
+        self.assertRaises(PermissionError, os.unlink, filename)
 
         # Try to write
-        with self.assertRaises(IOError) as cm:
+        with self.assertRaises(PermissionError):
             open(filename, 'w+').write('Hello')
-        self.assertEqual(cm.exception[0], errno.EPERM)
 
         # delete properly
         try:
@@ -60,12 +53,3 @@ class LockRemoveTests(t4_fuse.fuse_tests):
             self.fail("s3qlrm raised exception")
 
         self.assertTrue('lock_dir' not in llfuse.listdir(self.mnt_dir))
-
-# Somehow important according to pyunit documentation
-def suite():
-    return unittest.makeSuite(LockRemoveTests)
-
-
-# Allow calling from command line
-if __name__ == "__main__":
-    unittest.main()

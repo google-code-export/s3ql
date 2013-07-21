@@ -6,14 +6,13 @@ Copyright (C) Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-from .deltadump import INTEGER, BLOB, TIME, dump_table, load_table
+from .logging import logging # Ensure use of custom logger class
 from .database import Connection
-import logging
+from .deltadump import INTEGER, BLOB, TIME, dump_table, load_table
 import os
 import stat
 
-log = logging.getLogger('metadata')
+log = logging.getLogger(__name__)
 
 # Has to be kept in sync with create_tables()!
 DUMP_SPEC = [
@@ -109,13 +108,14 @@ def cycle_metadata(backend):
     from .backends.common import NoSuchObject
 
     log.info('Backing up old metadata...')
-    for i in reversed(range(10)):
+    for i in range(10)[::-1]:
         try:
             backend.rename("s3ql_metadata_bak_%d" % i, "s3ql_metadata_bak_%d" % (i + 1))
         except NoSuchObject:
             pass
 
     backend.rename("s3ql_metadata", "s3ql_metadata_bak_0")
+    backend.rename("s3ql_metadata_new", "s3ql_metadata")
 
 def dump_metadata(db, fh):
     '''Dump metadata into fh

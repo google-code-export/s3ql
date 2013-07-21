@@ -9,11 +9,6 @@ Known Issues
   at some point. See `issue 385 <http://code.google.com/p/s3ql/issues/detail?id=385>`_
   for more details.
 
-* S3QL does not verify TLS/SSL server certificates and is thus
-  vulnerable to man-in-the-middle attacks. See `issue 267
-  <http://code.google.com/p/s3ql/issues/detail?id=267>`_ for more
-  details.
-
 * S3QL is rather slow when an application tries to write data in
   unreasonably small chunks. If a 1 MiB file is copied in chunks of 1
   KB, this will take more than 10 times as long as when it's copied
@@ -75,3 +70,9 @@ Known Issues
   S3QL first writes data into the cache, it can no longer return an
   error when it later turns out that the cache can not be committed to
   the backend.
+
+* A malicious backend server can easily execute denial of service
+  attacks against a client running S3QL. This is a result of S3QL
+  using Python's ElementTree XML parser, which is `vulnerable to
+  entity expansion attacks
+  <http://docs.python.org/3/library/xml.html#xml-vulnerabilities>`_.

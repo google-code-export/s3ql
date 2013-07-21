@@ -6,17 +6,16 @@ Copyright (C) Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-from .common import setup_logging, CTRL_NAME, QuietError
+from .logging import logging, setup_logging, QuietError
+from .common import assert_fs_owner, PICKLE_PROTOCOL, path2bytes
 from .parse_args import ArgumentParser
-import cPickle as pickle
 import llfuse
-import logging
 import os
+import pickle
 import sys
 import textwrap
 
-log = logging.getLogger("remove")
+log = logging.getLogger(__name__)
 
 def parse_args(args):
     '''Parse command line'''
@@ -30,6 +29,7 @@ def parse_args(args):
     parser.add_debug()
     parser.add_quiet()
     parser.add_version()
+    parser.add_fatal_warnings()
 
     parser.add_argument('path', metavar='<path>', nargs='+',
                         help='Directories to remove',
@@ -48,26 +48,14 @@ def main(args=None):
     setup_logging(options)
 
     for name in options.path:
-        if not os.path.exists(name):
-            raise QuietError('%r does not exist' % name)
+        if os.path.ismount(name):
+            raise QuietError('%s is a mount point.' % name)
 
-        parent = os.path.dirname(os.path.abspath(name))
-        fstat_p = os.stat(parent)
-        fstat = os.stat(name)
-
-        if fstat_p.st_dev != fstat.st_dev:
-            raise QuietError('%s is a mount point itself.' % name)
-
-        ctrlfile = os.path.join(parent, CTRL_NAME)
-        if not (CTRL_NAME not in llfuse.listdir(parent) and os.path.exists(ctrlfile)):
-            raise QuietError('%s is not on an S3QL file system' % name)
-
-        if os.stat(ctrlfile).st_uid != os.geteuid():
-            raise QuietError('Only root and the mounting user may run s3qlrm.')
-
+        ctrlfile = assert_fs_owner(name)
+        fstat_p = os.stat(os.path.dirname(os.path.abspath(name)))
         llfuse.setxattr(ctrlfile, 'rmtree', pickle.dumps((fstat_p.st_ino,
-                                                          os.path.basename(name)),
-                                                          pickle.HIGHEST_PROTOCOL))
+                                                          path2bytes(os.path.basename(name))),
+                                                          PICKLE_PROTOCOL))
 
 
 if __name__ == '__main__':

@@ -6,12 +6,10 @@ Copyright (C) 2008-2010 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-
 from contextlib import contextmanager
 from s3ql.backends import local
 from s3ql.backends.common import BackendPool, AbstractBackend
-from s3ql.block_cache import BlockCache
+from s3ql.block_cache import BlockCache, QuitSentinel
 from s3ql.mkfs import init_tables
 from s3ql.metadata import create_tables
 from s3ql.database import Connection
@@ -22,17 +20,40 @@ import stat
 import tempfile
 import threading
 import time
-import unittest2 as unittest
+import unittest
+
+# A dummy removal queue to monkeypatch around the need for removal and upload
+# threads
+class DummyQueue:
+    def __init__(self, cache):
+        self.obj = None
+        self.cache = cache
+        
+        
+    def put(self, obj):
+        self.obj = obj
+        self.cache._removal_loop()
+
+    def get(self, block=True):
+        if self.obj is None:
+            raise RuntimeError("Don't know what to return")
+        elif self.obj is QuitSentinel:
+            self.obj = None
+            return QuitSentinel
+        else:
+            tmp = self.obj
+            self.obj = QuitSentinel
+            return tmp
 
 class cache_tests(unittest.TestCase):
 
     def setUp(self):
 
-        self.backend_dir = tempfile.mkdtemp()
+        self.backend_dir = tempfile.mkdtemp(prefix='s3ql-backend-')
         self.backend_pool = BackendPool(lambda: local.Backend('local://' + self.backend_dir, 
                                                            None, None))
 
-        self.cachedir = tempfile.mkdtemp()
+        self.cachedir = tempfile.mkdtemp(prefix='s3ql-cache-')
         self.max_obj_size = 1024
 
         # Destructors are not guaranteed to run, and we can't unlink
@@ -51,21 +72,30 @@ class cache_tests(unittest.TestCase):
                          | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH,
                          os.getuid(), os.getgid(), time.time(), time.time(), time.time(), 1, 32))
 
-        self.cache = BlockCache(self.backend_pool, self.db, self.cachedir + "/cache",
-                                self.max_obj_size * 100)
+        cache = BlockCache(self.backend_pool, self.db, self.cachedir + "/cache",
+                           self.max_obj_size * 100)
+        self.cache = cache
+        
+        # Monkeypatch around the need for removal and upload threads
+        cache.to_remove = DummyQueue(cache)
 
+        class DummyDistributor:
+            def put(self, arg):
+                cache._do_upload(*arg)
+        cache.to_upload = DummyDistributor()
+        
         # Tested methods assume that they are called from
         # file system request handler
         llfuse.lock.acquire()
 
     def tearDown(self):
+        llfuse.lock.release()
         self.cache.backend_pool = self.backend_pool
         self.cache.destroy()
         shutil.rmtree(self.cachedir)
         shutil.rmtree(self.backend_dir)
         os.unlink(self.dbfile.name)
-        llfuse.lock.release()
-
+        
     @staticmethod
     def random_data(len_):
         with open("/dev/urandom", "rb") as fh:
@@ -101,14 +131,14 @@ class cache_tests(unittest.TestCase):
         for i in most_recent:
             time.sleep(0.2)
             with self.cache.get(inode, i) as fh:
-                fh.write('%d' % i)
+                fh.write(('%d' % i).encode())
 
         # And some others
         for i in range(20):
             if i in most_recent:
                 continue
             with self.cache.get(inode, i) as fh:
-                fh.write('%d' % i)
+                fh.write(('%d' % i).encode())
 
         # Flush the 2 most recently accessed ones
         commit(self.cache, inode, most_recent[-2])
@@ -230,7 +260,7 @@ class cache_tests(unittest.TestCase):
         self.cache.remove(inode, 1)
         with self.cache.get(inode, 1) as fh:
             fh.seek(0)
-            self.assertTrue(fh.read(42) == '')
+            self.assertEqual(fh.read(42), b'')
 
     def test_remove_cache_db(self):
         inode = self.inode
@@ -249,7 +279,7 @@ class cache_tests(unittest.TestCase):
 
         with self.cache.get(inode, 1) as fh:
             fh.seek(0)
-            self.assertTrue(fh.read(42) == '')
+            self.assertEqual(fh.read(42), b'')
 
 
     def test_remove_db(self):
@@ -268,11 +298,11 @@ class cache_tests(unittest.TestCase):
         self.cache.backend_pool.verify()
         with self.cache.get(inode, 1) as fh:
             fh.seek(0)
-            self.assertTrue(fh.read(42) == '')
+            self.assertEqual(fh.read(42), b'')
 
 class TestBackendPool(AbstractBackend):
     def __init__(self, backend_pool, no_read=0, no_write=0, no_del=0):
-        super(TestBackendPool, self).__init__()
+        super().__init__()
         self.no_read = no_read
         self.no_write = no_write
         self.no_del = no_del
@@ -366,7 +396,7 @@ def commit(cache, inode, block=None):
     uploads have been completed.
     """
 
-    for el in cache.entries.itervalues():
+    for el in cache.entries.values():
         if el.inode != inode:
             continue
         if not el.dirty:
@@ -376,10 +406,3 @@ def commit(cache, inode, block=None):
             continue
 
         cache.upload(el)
-
-
-def suite():
-    return unittest.makeSuite(cache_tests)
-
-if __name__ == "__main__":
-    unittest.main()

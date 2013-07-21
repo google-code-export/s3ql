@@ -6,18 +6,14 @@ Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-from .common import CTRL_NAME, QuietError, setup_logging
+from .logging import logging, setup_logging
+from .common import assert_fs_owner
 from .parse_args import ArgumentParser
 import llfuse
-import logging
-import os
-import posixpath
 import struct
 import sys
 
-
-log = logging.getLogger("stat")
+log = logging.getLogger(__name__)
 
 def parse_args(args):
     '''Parse command line'''
@@ -28,6 +24,8 @@ def parse_args(args):
     parser.add_debug()
     parser.add_quiet()
     parser.add_version()
+    parser.add_fatal_warnings()
+
     parser.add_argument("mountpoint", metavar='<mountpoint>',
                         type=(lambda x: x.rstrip('/')),
                         help='Mount point of the file system to examine')
@@ -42,25 +40,13 @@ def main(args=None):
 
     options = parse_args(args)
     setup_logging(options)
-    mountpoint = options.mountpoint
 
-    # Check if it's a mount point
-    if not posixpath.ismount(mountpoint):
-        raise QuietError('%s is not a mount point' % mountpoint)
-
-    # Check if it's an S3QL mountpoint
-    ctrlfile = os.path.join(mountpoint, CTRL_NAME)
-    if not (CTRL_NAME not in llfuse.listdir(mountpoint)
-            and os.path.exists(ctrlfile)):
-        raise QuietError('%s is not a mount point' % mountpoint)
-
-    if os.stat(ctrlfile).st_uid != os.geteuid() and os.geteuid() != 0:
-        raise QuietError('Only root and the mounting user may run s3qlstat.')
+    ctrlfile = assert_fs_owner(options.mountpoint, mountpoint=True)
 
     # Use a decent sized buffer, otherwise the statistics have to be
     # calculated thee(!) times because we need to invoce getxattr
     # three times.
-    buf = llfuse.getxattr(ctrlfile, b's3qlstat', size_guess=256)
+    buf = llfuse.getxattr(ctrlfile, 's3qlstat', size_guess=256)
 
     (entries, blocks, inodes, fs_size, dedup_size,
      compr_size, db_size) = struct.unpack('QQQQQQQ', buf)

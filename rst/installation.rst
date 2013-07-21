@@ -33,12 +33,16 @@ that is not the case.
   so under Linux you should actually use *2.6.26 or newer whenever
   possible*.
 
-* `Python <http://www.python.org/>`_ 2.7.0 or newer (but not Python
-  3.x). Make sure to also install the development headers.
+* `Python <http://www.python.org/>`_ 3.3.0 or newer. Make sure to also
+  install the development headers.
 
-* The `PyCrypto++ Python Module
-  <http://pypi.python.org/pypi/pycryptopp>`_. To check if this module
-  is installed, try to execute `python -c 'import pycryptopp'`. 
+* The `setuptools/distribute Python Module
+  <https://pypi.python.org/pypi/distribute>`_. To check if this
+  module is installed, try to execute `python -c 'import setuptools'`.
+
+* The `PyCrypto Python Module
+  <https://www.dlitz.net/software/pycrypto/>`_. To check if this
+  module is installed, try to execute `python -c 'import Crypto'`.
   
 * `SQLite <http://www.sqlite.org/>`_ version 3.7.0 or newer. SQLite
   has to be installed as a *shared library* with development headers.
@@ -46,21 +50,15 @@ that is not the case.
 * The `APSW Python Module <http://code.google.com/p/apsw/>`_. To check
   which (if any) version of APWS is installed, run the command ::
 
-    python -c 'import apsw; print apsw.apswversion()'
+    python -c 'import apsw; print(apsw.apswversion())'
 
   The printed version number should be at least 3.7.0. 
 
-* The `PyLibLZMA Python module
-  <http://pypi.python.org/pypi/pyliblzma>`_. To check if this module
-  is installed, execute `python -c 'import lzma; print
-  lzma.__version__'`. This should print a version number. You need at
-  least version 0.5.3.
-
 * The `Python LLFUSE module
   <http://code.google.com/p/python-llfuse/>`_. To check if this module
-  is installed, execute `python -c 'import llfuse; print
-  llfuse.__version__'`. This should print a version number. You need at
-  least version 0.37.
+  is installed, execute `python -c 'import llfuse;
+  print(llfuse.__version__)'`. This should print a version number. You
+  need at least version 0.39.
 
 .. _inst-s3ql:
 
@@ -71,8 +69,8 @@ To install S3QL itself, proceed as follows:
 
 1. Download S3QL from http://code.google.com/p/s3ql/downloads/list
 2. Unpack it into a folder of your choice
-3. Run `python setup.py build` to build S3QL.
-4. Run `python setup.py test` to run a self-test. If this fails, ask
+3. Run `python3 setup.py build_ext --inplace` to build S3QL.
+4. Run `python3 runtests.py tests` to run a self-test. If this fails, ask
    for help on the `mailing list
    <http://groups.google.com/group/s3ql>`_ or report a bug in the
    `issue tracker <http://code.google.com/p/s3ql/issues/list>`_.
@@ -82,9 +80,9 @@ Now you have three options:
 * You can run the S3QL commands from the `bin/` directory.
 
 * You can install S3QL system-wide for all users. To do that, you
-  have to run `sudo python setup.py install`.
+  have to run `sudo python3 setup.py install`.
 
-* You can install S3QL into `~/.local` by executing `python
+* You can install S3QL into `~/.local` by executing `python3
   setup.py install --user`. In this case you should make sure that
   `~/.local/bin` is in your `$PATH` environment variable.
 
@@ -93,16 +91,77 @@ Development Version
 ===================
 
 If you have checked out the unstable development version from the
-Mercurial repository, a bit more effort is required. You need to also
-have Cython_ (0.16 or newer) and Sphinx_ (1.1 or newer) installed, and
-the necessary commands are::
+Mercurial repository, a bit more effort is required. You'll also need:
 
-  python setup.py build_cython
-  python setup.py build_ext --inplace
-  python setup.py build_sphinx
-  python setup.py test
-  python setup.py install
+* Version 0.16 or newer of the Cython_ compiler.
+
+* Version 1.1 or newer of the Sphinx_ document processor.
+
+* The `py.test`_ testing tool, version 2.3.3 or newer.
+
+With these additional dependencies installed, S3QL can be build and
+tested with ::
+
+  python3 setup.py build_cython
+  python3 setup.py build_ext --inplace
+  py.test tests/
+
+Note that when building from the Mercurial repository, building and
+testing is done with several additional checks. This may cause
+compilation and/or tests to fail even though there are no problems
+with functionality. For example, when building from the Mercurial
+repository, any use of functions that are scheduled for deprecation in
+future Python version will cause tests to fail. If you would rather
+just check for functionality, you can delete the :file:`MANIFEST.in`
+file. In that case, the build system will behave as it does for a
+regular release.
+
+The HTML and PDF documentation can be generated with ::
   
+  python3 setup.py build_sphinx
+
+and S3QL can be installed as usual with ::
+
+  python3 setup.py install [--user]
+
+
+Running tests requiring remote servers
+======================================
+
+By default, the `runtest.py` (or `py.test`) script skips all tests
+that require connection to a remote storage backend. If you would like
+to run these tests too (which is always a good idea), you have to
+create additional entries in your `~/.s3ql/authinfo2` file that tell
+S3QL what server and credentials to use for these tests. These entries
+have the following form::
+
+  [<BACKEND>-test]
+  backend-login: <user>
+  backend-password: <password>
+  test-fs: <storage-url>
+
+Here *<BACKEND>* specifies the backend that you want to test
+(e.g. *s3*, *s3c*, *gs*, or *swift*), *<user>* and *<password>* are
+the backend authentication credentials, and *<storage-url>* specifies
+the full storage URL that will be used for testing. **Any existing
+S3QL file system in this storage URL will be destroyed during
+testing**.
+
+For example, to run tests that need connection to a Google Storage
+server, you would add something like ::
+
+  [gs-test]
+  backend-login: GOOGIGWLONT238MD7HZ4
+  backend-password: rmEbstjscoeunt1249oes1298gauidbs3hl
+  test-fs: gs://joes-gs-bucket/s3ql_tests/
+
+On the next run of `runtest.py` (or `py.test` when using the
+development version), the additional tests will be run. If the tests
+are still skipped, you can get more information about why tests are
+being skipped by passing the :cmdopt:`-rs` argument to
+`runtest.py`/`py.test`.
+
 
 .. _Cython: http://www.cython.org/
 .. _Sphinx: http://sphinx.pocoo.org/
+.. _py.test: http://pytest.org/

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 '''
 scramble_db.py - this file is part of S3QL (http://s3ql.googlecode.com)
 
@@ -7,16 +7,12 @@ Copyright (C)  Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-
 # Data can be restored with:
 #from s3ql.metadata import restore_metadata
 #from s3ql.database import Connection
 #restore_metadata(open('s3ql_metadata.dat', 'rb+'), 'data.sqlite')
 
-
-from __future__ import division, print_function, absolute_import
-import cPickle as pickle
-import logging
+import pickle
 import os
 import shutil
 import sys
@@ -30,13 +26,14 @@ if (os.path.exists(os.path.join(basedir, 'setup.py')) and
     os.path.exists(os.path.join(basedir, 'src', 's3ql', '__init__.py'))):
     sys.path = [os.path.join(basedir, 'src')] + sys.path
 
+from s3ql.logging import logging, setup_logging, QuietError
 from s3ql import CURRENT_FS_REV
-from s3ql.common import setup_logging, get_backend_cachedir, QuietError
+from s3ql.common import get_backend_cachedir
 from s3ql.database import Connection
 from s3ql.metadata import dump_metadata
 from s3ql.parse_args import ArgumentParser
 
-log = logging.getLogger("scramble_db")
+log = logging.getLogger(__name__)
 
 DBNAME = 's3ql_metadata.dat'
 

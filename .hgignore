@@ -7,10 +7,11 @@ syntax: regexp
 ^.project$
 ^.settings$
 \.pyc$
-^setup.log$
 ^dist$
 ^src/s3ql/deltadump.c$
-^src/s3ql/deltadump.so$
+^src/s3ql/deltadump.*.so$
 ^contrib/expire_backups.1$
 ^contrib/pcp.1$
-^test.py$
+^tests/test.log$
+^runtests.py$
+^s3ql.old$

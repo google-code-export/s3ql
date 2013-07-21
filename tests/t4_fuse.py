@@ -6,10 +6,9 @@ Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import absolute_import, division, print_function
 from os.path import basename
-from s3ql.common import CTRL_NAME
-import cPickle as pickle
+from s3ql.common import CTRL_NAME, PICKLE_PROTOCOL, path2bytes
+import pickle
 import filecmp
 import llfuse
 import logging
@@ -23,17 +22,17 @@ import tempfile
 import threading
 import time
 import traceback
-import unittest2 as unittest
+import unittest
 
 
-log = logging.getLogger()
+log = logging.getLogger(__name__)
 
 # For debugging
 USE_VALGRIND = False
 
 class ExceptionStoringThread(threading.Thread):
     def __init__(self):
-        super(ExceptionStoringThread, self).__init__()
+        super().__init__()
         self._exc_info = None
         self._joined = False
 
@@ -75,7 +74,7 @@ class EmbeddedException(Exception):
     '''
 
     def __init__(self, exc_info, threadname):
-        super(EmbeddedException, self).__init__()
+        super().__init__()
         self.exc_info = exc_info
         self.threadname = threadname
 
@@ -89,7 +88,7 @@ class EmbeddedException(Exception):
 
 class AsyncFn(ExceptionStoringThread):
     def __init__(self, fn, *args, **kwargs):
-        super(AsyncFn, self).__init__()
+        super().__init__()
         self.target = fn
         self.args = args
         self.kwargs = kwargs
@@ -102,7 +101,7 @@ def retry(timeout, fn, *a, **kw):
     
     If the return value of fn() returns something True, this value
     is returned. Otherwise, the function is called repeatedly for
-    `timeout` seconds. If the timeout is reached, `TimeoutError` is
+    `timeout` seconds. If the timeout is reached, `RetryTimeoutError` is
     raised.
     """
 
@@ -117,9 +116,9 @@ def retry(timeout, fn, *a, **kw):
         if step < waited / 30:
             step *= 2
 
-    raise TimeoutError()
+    raise RetryTimeoutError()
 
-class TimeoutError(Exception):
+class RetryTimeoutError(Exception):
     '''Raised by `retry()` when a timeout is reached.'''
 
     pass
@@ -127,10 +126,11 @@ class TimeoutError(Exception):
 def skip_if_no_fusermount():
     '''Raise SkipTest if fusermount is not available'''
 
-    which = subprocess.Popen(['which', 'fusermount'], stdout=subprocess.PIPE)
-    fusermount_path = which.communicate()[0].strip()
-
-    if not fusermount_path or which.wait() != 0:
+    with subprocess.Popen(['which', 'fusermount'], stdout=subprocess.PIPE,
+                          universal_newlines=True) as which:
+        fusermount_path = which.communicate()[0].strip()
+    
+    if not fusermount_path or which.returncode != 0:
         raise unittest.SkipTest("Can't find fusermount executable")
 
     if not os.path.exists('/dev/fuse'):
@@ -144,16 +144,26 @@ def skip_if_no_fusermount():
         raise unittest.SkipTest('fusermount executable not setuid, and we are not root.')
 
     try:
-        subprocess.check_call([fusermount_path, '-V'],
-                              stdout=open('/dev/null', 'wb'))
+        with open('/dev/null', 'wb') as null:
+            subprocess.check_call([fusermount_path, '-V'], stdout=null)
     except subprocess.CalledProcessError:
-        raise unittest.SkipTest('Unable to execute fusermount')
+        raise unittest.SkipTest('Unable to execute fusermount') from None
 
+def skip_without_rsync():
+    try:
+        with open('/dev/null', 'wb') as null:        
+            subprocess.call(['rsync', '--version'], stdout=null,
+                            stderr=subprocess.STDOUT,)
+    except FileNotFoundError:
+        raise unittest.SkipTest('rsync not installed') from None
+
+    
 if __name__ == '__main__':
     mypath = sys.argv[0]
 else:
     mypath = __file__
 BASEDIR = os.path.abspath(os.path.join(os.path.dirname(mypath), '..'))
+
 
 class fuse_tests(unittest.TestCase):
 
@@ -165,22 +175,28 @@ class fuse_tests(unittest.TestCase):
         if os.path.getsize(self.src) < 1048:
             raise RuntimeError("test file %s should be bigger than 1 KiB" % self.src)
 
-        self.mnt_dir = tempfile.mkdtemp()
-        self.cache_dir = tempfile.mkdtemp()
-        self.backend_dir = tempfile.mkdtemp()
+        self.mnt_dir = tempfile.mkdtemp(prefix='s3ql-mnt-')
+        self.cache_dir = tempfile.mkdtemp(prefix='s3ql-cache-')
+        self.backend_dir = tempfile.mkdtemp(prefix='s3ql-backend-')
 
         self.storage_url = 'local://' + self.backend_dir
         self.passphrase = 'oeut3d'
+        self.backend_login = None
+        self.backend_passphrase = None
 
         self.mount_process = None
         self.name_cnt = 0
 
     def mkfs(self):
-        proc = subprocess.Popen([os.path.join(BASEDIR, 'bin', 'mkfs.s3ql'),
-                                 '-L', 'test fs', '--max-obj-size', '500',
-                                 '--cachedir', self.cache_dir, '--quiet',
-                                 self.storage_url ], stdin=subprocess.PIPE)
+        proc = subprocess.Popen([sys.executable, os.path.join(BASEDIR, 'bin', 'mkfs.s3ql'),
+                                 '-L', 'test fs', '--max-obj-size', '500', '--fatal-warnings',
+                                 '--cachedir', self.cache_dir, '--quiet', '--authfile',
+                                 '/dev/null', self.storage_url ], stdin=subprocess.PIPE,
+                                universal_newlines=True)
 
+        if self.backend_login is not None:
+            print(self.backend_login, file=proc.stdin)
+            print(self.backend_passphrase, file=proc.stdin)
         print(self.passphrase, file=proc.stdin)
         print(self.passphrase, file=proc.stdin)
         proc.stdin.close()
@@ -188,11 +204,15 @@ class fuse_tests(unittest.TestCase):
         self.assertEqual(proc.wait(), 0)
 
     def mount(self):
-        self.mount_process = subprocess.Popen([os.path.join(BASEDIR, 'bin', 'mount.s3ql'),
-                                                "--fg", '--cachedir', self.cache_dir,
-                                                '--log', 'none', '--quiet',
-                                                  self.storage_url, self.mnt_dir],
-                                                  stdin=subprocess.PIPE)
+        self.mount_process = \
+            subprocess.Popen([sys.executable, os.path.join(BASEDIR, 'bin', 'mount.s3ql'),
+                              "--fg", '--cachedir', self.cache_dir, '--log', 'none',
+                              '--compress', 'zlib', '--quiet', '--fatal-warnings',
+                              self.storage_url, self.mnt_dir, '--authfile', '/dev/null' ],
+                             stdin=subprocess.PIPE, universal_newlines=True)
+        if self.backend_login is not None:
+            print(self.backend_login, file=self.mount_process.stdin)
+            print(self.backend_passphrase, file=self.mount_process.stdin)
         print(self.passphrase, file=self.mount_process.stdin)
         self.mount_process.stdin.close()
         def poll():
@@ -202,35 +222,56 @@ class fuse_tests(unittest.TestCase):
         retry(30, poll)
 
     def umount(self):
-        devnull = open('/dev/null', 'wb')
-        retry(5, lambda: subprocess.call(['fuser', '-m', self.mnt_dir],
-                                         stdout=devnull, stderr=devnull) == 1)
+        with open('/dev/null', 'wb') as devnull:
+            retry(5, lambda: subprocess.call(['fuser', '-m', self.mnt_dir],
+                                             stdout=devnull, stderr=devnull) == 1)
 
-        proc = subprocess.Popen([os.path.join(BASEDIR, 'bin', 'umount.s3ql'),
+        proc = subprocess.Popen([sys.executable, os.path.join(BASEDIR, 'bin', 'umount.s3ql'),
                                  '--quiet', self.mnt_dir])
         retry(90, lambda : proc.poll() is not None)
-        self.assertEquals(proc.wait(), 0)
+        self.assertEqual(proc.wait(), 0)
 
-        self.assertEqual(self.mount_process.wait(), 0)
+        self.assertEqual(self.mount_process.poll(), 0)
         self.assertFalse(os.path.ismount(self.mnt_dir))
 
     def fsck(self):
-        proc = subprocess.Popen([os.path.join(BASEDIR, 'bin', 'fsck.s3ql'),
-                                 '--force', '--quiet', '--log', 'none',
-                                 '--cachedir', self.cache_dir,
-                                 self.storage_url ], stdin=subprocess.PIPE)
-        print(self.passphrase, file=proc.stdin)
-        proc.stdin.close()
-        self.assertEqual(proc.wait(), 0)
+        # Use fsck to test authinfo reading
+        with tempfile.NamedTemporaryFile('wt') as authinfo_fh:
+            print('[entry1]',
+                  'storage-url: %s' % self.storage_url[:6],
+                  'fs-passphrase: clearly wrong',
+                  'backend-login: bla',
+                  'backend-password: not much better',
+                  '',
+                  '[entry2]',
+                  'storage-url: %s' % self.storage_url,
+                  'fs-passphrase: %s' % self.passphrase,
+                  'backend-login: %s' % self.backend_login,
+                  'backend-password:%s' % self.backend_passphrase,
+                  file=authinfo_fh, sep='\n')
+            authinfo_fh.flush()
+
+            proc = subprocess.Popen([sys.executable, os.path.join(BASEDIR, 'bin', 'fsck.s3ql'),
+                                     '--force', '--quiet', '--log', 'none', '--cachedir',
+                                     self.cache_dir, '--fatal-warnings', '--authfile',
+                                     authinfo_fh.name, self.storage_url ],
+                                    stdin=subprocess.PIPE, universal_newlines=True)
+            proc.stdin.close()
+            self.assertEqual(proc.wait(), 0)
 
     def tearDown(self):
-        subprocess.call(['fusermount', '-z', '-u', self.mnt_dir],
-                        stderr=open('/dev/null', 'wb'))
+        with open('/dev/null', 'wb') as devnull:
+            subprocess.call(['fusermount', '-z', '-u', self.mnt_dir],
+                            stderr=devnull)
         os.rmdir(self.mnt_dir)
 
         # Give mount process a little while to terminate
         if self.mount_process is not None:
-            retry(10, lambda : self.mount_process.poll() is not None)
+            try:
+                retry(90, lambda : self.mount_process.poll() is not None)
+            except TimeoutError:
+                # Ignore errors  during teardown
+                pass
 
         shutil.rmtree(self.cache_dir)
         shutil.rmtree(self.backend_dir)
@@ -270,11 +311,11 @@ class fuse_tests(unittest.TestCase):
         os.mkdir(fullname)
         fstat = os.stat(fullname)
         self.assertTrue(stat.S_ISDIR(fstat.st_mode))
-        self.assertEquals(llfuse.listdir(fullname), [])
-        self.assertEquals(fstat.st_nlink, 1)
+        self.assertEqual(llfuse.listdir(fullname), [])
+        self.assertEqual(fstat.st_nlink, 1)
         self.assertTrue(dirname in llfuse.listdir(self.mnt_dir))
         os.rmdir(fullname)
-        self.assertRaises(OSError, os.stat, fullname)
+        self.assertRaises(FileNotFoundError, os.stat, fullname)
         self.assertTrue(dirname not in llfuse.listdir(self.mnt_dir))
 
     def tst_symlink(self):
@@ -283,11 +324,11 @@ class fuse_tests(unittest.TestCase):
         os.symlink("/imaginary/dest", fullname)
         fstat = os.lstat(fullname)
         self.assertTrue(stat.S_ISLNK(fstat.st_mode))
-        self.assertEquals(os.readlink(fullname), "/imaginary/dest")
-        self.assertEquals(fstat.st_nlink, 1)
+        self.assertEqual(os.readlink(fullname), "/imaginary/dest")
+        self.assertEqual(fstat.st_nlink, 1)
         self.assertTrue(linkname in llfuse.listdir(self.mnt_dir))
         os.unlink(fullname)
-        self.assertRaises(OSError, os.lstat, fullname)
+        self.assertRaises(FileNotFoundError, os.lstat, fullname)
         self.assertTrue(linkname not in llfuse.listdir(self.mnt_dir))
 
     def tst_mknod(self):
@@ -296,11 +337,11 @@ class fuse_tests(unittest.TestCase):
         shutil.copyfile(src, filename)
         fstat = os.lstat(filename)
         self.assertTrue(stat.S_ISREG(fstat.st_mode))
-        self.assertEquals(fstat.st_nlink, 1)
+        self.assertEqual(fstat.st_nlink, 1)
         self.assertTrue(basename(filename) in llfuse.listdir(self.mnt_dir))
         self.assertTrue(filecmp.cmp(src, filename, False))
         os.unlink(filename)
-        self.assertRaises(OSError, os.stat, filename)
+        self.assertRaises(FileNotFoundError, os.stat, filename)
         self.assertTrue(basename(filename) not in llfuse.listdir(self.mnt_dir))
 
     def tst_chown(self):
@@ -313,17 +354,17 @@ class fuse_tests(unittest.TestCase):
         uid_new = uid + 1
         os.chown(filename, uid_new, -1)
         fstat = os.lstat(filename)
-        self.assertEquals(fstat.st_uid, uid_new)
-        self.assertEquals(fstat.st_gid, gid)
+        self.assertEqual(fstat.st_uid, uid_new)
+        self.assertEqual(fstat.st_gid, gid)
 
         gid_new = gid + 1
         os.chown(filename, -1, gid_new)
         fstat = os.lstat(filename)
-        self.assertEquals(fstat.st_uid, uid_new)
-        self.assertEquals(fstat.st_gid, gid_new)
+        self.assertEqual(fstat.st_uid, uid_new)
+        self.assertEqual(fstat.st_gid, gid_new)
 
         os.rmdir(filename)
-        self.assertRaises(OSError, os.stat, filename)
+        self.assertRaises(FileNotFoundError, os.stat, filename)
         self.assertTrue(basename(filename) not in llfuse.listdir(self.mnt_dir))
 
 
@@ -350,14 +391,14 @@ class fuse_tests(unittest.TestCase):
         fstat1 = os.lstat(name1)
         fstat2 = os.lstat(name2)
 
-        self.assertEquals(fstat1, fstat2)
-        self.assertEquals(fstat1.st_nlink, 2)
+        self.assertEqual(fstat1, fstat2)
+        self.assertEqual(fstat1.st_nlink, 2)
 
         self.assertTrue(basename(name2) in llfuse.listdir(self.mnt_dir))
         self.assertTrue(filecmp.cmp(name1, name2, False))
         os.unlink(name2)
         fstat1 = os.lstat(name1)
-        self.assertEquals(fstat1.st_nlink, 1)
+        self.assertEqual(fstat1.st_nlink, 1)
         os.unlink(name1)
 
     def tst_readdir(self):
@@ -376,7 +417,7 @@ class fuse_tests(unittest.TestCase):
         listdir_is.sort()
         listdir_should = [ basename(file_), basename(subdir) ]
         listdir_should.sort()
-        self.assertEquals(listdir_is, listdir_should)
+        self.assertEqual(listdir_is, listdir_should)
 
         os.unlink(file_)
         os.unlink(subfile)
@@ -393,10 +434,10 @@ class fuse_tests(unittest.TestCase):
         fd = os.open(filename, os.O_RDWR)
 
         os.ftruncate(fd, size + 1024) # add > 1 block
-        self.assertEquals(os.stat(filename).st_size, size + 1024)
+        self.assertEqual(os.stat(filename).st_size, size + 1024)
 
         os.ftruncate(fd, size - 1024) # Truncate > 1 block
-        self.assertEquals(os.stat(filename).st_size, size - 1024)
+        self.assertEqual(os.stat(filename).st_size, size - 1024)
 
         os.close(fd)
         os.unlink(filename)
@@ -409,16 +450,16 @@ class fuse_tests(unittest.TestCase):
         fstat = os.stat(filename)
         size = fstat.st_size
 
-        subprocess.check_call([os.path.join(BASEDIR, 'bin', 's3qlctrl'),
+        subprocess.check_call([sys.executable, os.path.join(BASEDIR, 'bin', 's3qlctrl'),
                                '--quiet', 'flushcache', self.mnt_dir ])
 
         fd = os.open(filename, os.O_RDWR)
 
         os.ftruncate(fd, size + 1024) # add > 1 block
-        self.assertEquals(os.stat(filename).st_size, size + 1024)
+        self.assertEqual(os.stat(filename).st_size, size + 1024)
 
         os.ftruncate(fd, size - 1024) # Truncate > 1 block
-        self.assertEquals(os.stat(filename).st_size, size - 1024)
+        self.assertEqual(os.stat(filename).st_size, size - 1024)
 
         os.close(fd)
         os.unlink(filename)
@@ -430,9 +471,9 @@ class fuse_tests(unittest.TestCase):
         self.assertTrue(stat.S_ISDIR(os.stat(fullname).st_mode))
         self.assertTrue(dirname in llfuse.listdir(self.mnt_dir))
         llfuse.setxattr('%s/%s' % (self.mnt_dir, CTRL_NAME), 
-                        'rmtree', pickle.dumps((llfuse.ROOT_INODE, dirname),
-                                               pickle.HIGHEST_PROTOCOL))                
-        self.assertRaises(OSError, os.stat, fullname)
+                        'rmtree', pickle.dumps((llfuse.ROOT_INODE, path2bytes(dirname)),
+                                               PICKLE_PROTOCOL))
+        self.assertRaises(FileNotFoundError, os.stat, fullname)
         self.assertTrue(dirname not in llfuse.listdir(self.mnt_dir))
 
         
@@ -440,25 +481,48 @@ class fuse_tests(unittest.TestCase):
 def suite():
     return unittest.makeSuite(fuse_tests)
 
-def populate_dir(path, entries=4096, max_size=10*1024*1024,
+def populate_dir(path, entries=1000, size=20*1024*1024,
                  pooldir='/usr/bin', seed=None):
     '''Populate directory with random data
     
-    *entires* specifies the total number of directory entries that
-    are created in the tree. *max_size* specifies the maximum size
-    occupied by all files. The files in *pooldir* are used as a 
-    source of directory names and file contents.
+    *entries* specifies the total number of directory entries that are created
+    in the tree. *size* specifies the size occupied by all files together. The
+    files in *pooldir* are used as a source of directory names and file
+    contents.
     
-    *seed* is used to initalize the random number generator and
-    can be used to make the created structure reproducible
-    (provided that the contents of *pooldir* don't change).
+    *seed* is used to initalize the random number generator and can be used to
+    make the created structure reproducible (provided that the contents of
+    *pooldir* don't change).
     '''
 
     poolnames = os.listdir(pooldir)
     if seed is None:
+        # We want tests to be reproducible on a given system, so users
+        # can report meaningful bugs
         seed = len(poolnames)
     random.seed(seed)
-     
+
+    # Entries in percentages
+    subdir_cnt = random.randint(5, 10)
+    file_cnt = random.randint(60, 70)
+    fifo_cnt = random.randint(5, 10)
+    symlink_cnt = random.randint(10, 20)
+    hardlink_cnt = random.randint(5, 15)
+
+    # Normalize to desired entry count
+    scale = entries / sum((subdir_cnt, file_cnt, fifo_cnt, symlink_cnt, hardlink_cnt))
+    subdir_cnt = int(scale * subdir_cnt)
+    file_cnt = int(scale * file_cnt)
+    fifo_cnt = int(scale * fifo_cnt)
+    symlink_cnt = int(scale * symlink_cnt)
+    hardlink_cnt = int(scale * hardlink_cnt)
+
+    # Sizes, make sure there is at least one big file
+    file_sizes = [ random.randint(0, 100) for _ in range(file_cnt-1) ]
+    scale = 0.5 * size / sum(file_sizes)
+    file_sizes = [ int(scale * x) for x in file_sizes ]
+    file_sizes.append(int(0.5 * size))
+    
     # Special characters for use in filenames
     special_chars = [ chr(x) for x in range(256) 
                       if x not in (0, ord('/')) ]
@@ -466,8 +530,7 @@ def populate_dir(path, entries=4096, max_size=10*1024*1024,
     def random_name(path):
         '''Get random, non-existing file name underneath *path*
         
-        Returns a fully qualified path with a filename chosen
-        from *poolnames*.
+        Returns a fully qualified path with a filename chosen from *poolnames*.
         '''
         while True:
             name = poolnames[random.randrange(len(poolnames))]
@@ -477,7 +540,7 @@ def populate_dir(path, entries=4096, max_size=10*1024*1024,
             if len_ > 0:
                 pos = random.choice((-1,0,1)) # Prefix, Middle, Suffix
                 s = ''.join(special_chars[random.randrange(len(special_chars))]
-                            for _ in xrange(len_))
+                            for _ in range(len_))
                 if pos == -1:
                     name = s + name
                 elif pos == 1:
@@ -494,10 +557,8 @@ def populate_dir(path, entries=4096, max_size=10*1024*1024,
     # 
     # Step 1: create directory tree
     #
-    subdir_cnt = random.randint(0, int(0.1 * entries))
-    entries -= subdir_cnt
     dirs = [ path ]
-    for _ in xrange(subdir_cnt):
+    for _ in range(subdir_cnt):
         idx = random.randrange(len(dirs))
         name = random_name(dirs[idx])
         os.mkdir(name)
@@ -507,14 +568,10 @@ def populate_dir(path, entries=4096, max_size=10*1024*1024,
     #
     # Step 2: populate the tree with files
     #
-    file_cnt = random.randint(int(entries/3), int(3*entries/4))
-    entries -= file_cnt
     files = []
-    for _ in xrange(file_cnt):
+    for size in file_sizes:
         idx = random.randrange(len(dirs))
         name = random_name(dirs[idx])
-        size = random.randint(0, int(0.01 * max_size))
-        max_size -= size
         with open(name, 'wb') as dst:
             while size > 0:
                 idx = random.randrange(len(poolnames))
@@ -530,19 +587,15 @@ def populate_dir(path, entries=4096, max_size=10*1024*1024,
     #
     # Step 3: Special files
     #
-    fifo_cnt = random.randint(int(entries/3), int(2*entries/3))
-    entries -= fifo_cnt
-    for _ in xrange(fifo_cnt):
+    for _ in range(fifo_cnt):
         name = random_name(dirs[random.randrange(len(dirs))])
         os.mkfifo(name)
         files.append(name)
-             
-    #   
+
+    #
     # Step 4: populate tree with symlinks 
     #
-    symlink_cnt = random.randint(int(entries/3), int(2*entries/3))
-    entries -= symlink_cnt
-    for _ in xrange(symlink_cnt):
+    for _ in range(symlink_cnt):
         relative = random.choice((True, False))
         existing = random.choice((True, False))
         idx = random.randrange(len(dirs))
@@ -568,9 +621,7 @@ def populate_dir(path, entries=4096, max_size=10*1024*1024,
     #
     # Step 5: Create some hardlinks
     #
-    hardlink_cnt = random.randint(int(entries/3), int(2*entries/3))
-    entries -= hardlink_cnt
-    for _ in xrange(hardlink_cnt):
+    for _ in range(hardlink_cnt):
         samedir = random.choice((True, False))
         
         target = files[random.randrange(len(files))]
@@ -581,8 +632,3 @@ def populate_dir(path, entries=4096, max_size=10*1024*1024,
         name = random_name(dir_)
         os.link(target, name)
         files.append(name)
-        
-
-# Allow calling from command line
-if __name__ == "__main__":
-    unittest.main()

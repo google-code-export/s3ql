@@ -6,19 +6,19 @@ Copyright (C) Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
+from .logging import logging, setup_logging, QuietError
 from . import CURRENT_FS_REV
 from .backends.common import NoSuchObject, get_backend, DanglingStorageURLError
 from .common import (ROOT_INODE, inode_for_path, sha256_fh, get_path, BUFSIZE, get_backend_cachedir, 
-    setup_logging, QuietError, get_seq_no, stream_write_bz2, stream_read_bz2, CTRL_INODE)
+                     get_seq_no, stream_write_bz2, stream_read_bz2, CTRL_INODE, 
+                     PICKLE_PROTOCOL)
 from .database import NoSuchRowError, Connection
 from .metadata import restore_metadata, cycle_metadata, dump_metadata, create_tables
 from .parse_args import ArgumentParser
 from os.path import basename
 import apsw
-import cPickle as pickle
-import logging
 import os
+import pickle
 import re
 import shutil
 import stat
@@ -26,9 +26,9 @@ import sys
 import tempfile
 import textwrap
 import time
+import atexit
 
-
-log = logging.getLogger("fsck")
+log = logging.getLogger(__name__)
 
 S_IFMT = (stat.S_IFDIR | stat.S_IFREG | stat.S_IFSOCK | stat.S_IFBLK |
           stat.S_IFCHR | stat.S_IFIFO | stat.S_IFLNK)
@@ -111,7 +111,7 @@ class Fsck(object):
         '''Log file system error if not expected'''
 
         if not self.expect_errors:
-            return log.warn(*a, **kw)
+            return log.warning(*a, **kw)
 
     def check_foreign_keys(self):
         '''Check for referential integrity
@@ -166,9 +166,9 @@ class Fsck(object):
 
             self.log_error("Committing block %d of inode %d to backend", blockno, inode)
 
-            fh = open(os.path.join(self.cachedir, filename), "rb")
-            size = os.fstat(fh.fileno()).st_size
-            hash_ = sha256_fh(fh)
+            with open(os.path.join(self.cachedir, filename), "rb") as fh:
+                size = os.fstat(fh.fileno()).st_size
+                hash_ = sha256_fh(fh)
 
             try:
                 (block_id, obj_id) = self.conn.get_row('SELECT id, obj_id FROM blocks WHERE hash=?', (hash_,))
@@ -178,8 +178,8 @@ class Fsck(object):
                 block_id = self.conn.rowid('INSERT INTO blocks (refcount, hash, obj_id, size) '
                                            'VALUES(?, ?, ?, ?)', (1, hash_, obj_id, size))
                 def do_write(obj_fh):
-                    fh.seek(0)
-                    shutil.copyfileobj(fh, obj_fh, BUFSIZE)
+                    with open(os.path.join(self.cachedir, filename), "rb") as fh:
+                        shutil.copyfileobj(fh, obj_fh, BUFSIZE)
                     return obj_fh
 
                 obj_size = self.backend.perform_write(do_write, 's3ql_data_%d' % obj_id).get_obj_size()
@@ -204,7 +204,6 @@ class Fsck(object):
                 self.conn.execute('UPDATE blocks SET refcount=refcount-1 WHERE id=?', (old_block_id,))
                 self.unlinked_blocks.add(old_block_id)
 
-                fh.close()
             os.unlink(os.path.join(self.cachedir, filename))
 
 
@@ -254,9 +253,9 @@ class Fsck(object):
             try:
                 path = get_path(inode_p, self.conn)[1:]
             except NoSuchRowError:
-                newname = '-%d' % inode
+                newname = ('-%d' % inode).encode()
             else:
-                newname = path.replace('_', '__').replace('/', '_') + '-%d' % inode
+                newname = escape(path) + ('-%d' % inode).encode()
             (id_p_new, newname) = self.resolve_free(b"/lost+found", newname)
 
             self.log_error('Content entry for inode %d refers to non-existing name with id %d, '
@@ -277,7 +276,8 @@ class Fsck(object):
                                          'ON parent_inode = inodes.id WHERE inodes.id IS NULL'):
             self.found_errors = True
             name = self.conn.get_val('SELECT name FROM names WHERE id = ?', (name_id,))
-            (id_p_new, newname) = self.resolve_free(b"/lost+found", '[%d]-%s' % (inode_p, name))
+            (id_p_new, newname) = self.resolve_free(b"/lost+found", 
+                                                    ('[%d]-%s' % (inode_p, name)).encode())
 
             self.log_error('Parent inode %d for "%s" vanished, moving to /lost+found', inode_p, name)
             self._del_name(name_id)
@@ -464,7 +464,7 @@ class Fsck(object):
 
                 self.found_errors = True
                 if cnt is None:
-                    (id_p, name) = self.resolve_free(b"/lost+found", b"inode-%d" % id_)
+                    (id_p, name) = self.resolve_free(b"/lost+found", ("inode-%d" % id_).encode())
                     self.log_error("Inode %d not referenced, adding as /lost+found/%s", id_, name)
                     self.conn.execute("INSERT INTO contents (name_id, inode, parent_inode) "
                                       "VALUES (?,?,?)", (self._add_name(basename(name)), id_, id_p))
@@ -497,8 +497,7 @@ class Fsck(object):
                                                              'FROM contents_v WHERE inode=?', (inode,)):
                     path = get_path(id_p, self.conn, name)
                     self.log_error("File may lack data, moved to /lost+found: %s", path)
-                    (lof_id, newname) = self.resolve_free(b"/lost+found",
-                                                        path[1:].replace('_', '__').replace('/', '_'))
+                    (lof_id, newname) = self.resolve_free(b"/lost+found", escape(path))
 
                     self.conn.execute('UPDATE contents SET name_id=?, parent_inode=? '
                                       'WHERE name_id=? AND parent_inode=?',
@@ -549,8 +548,7 @@ class Fsck(object):
                                                          'FROM contents_v WHERE inode=?', (inode,)):
                 path = get_path(id_p, self.conn, name)
                 self.log_error("File may lack data, moved to /lost+found: %s", path)
-                (lof_id, newname) = self.resolve_free(b"/lost+found",
-                                                    path[1:].replace('_', '__').replace('/', '_'))
+                (lof_id, newname) = self.resolve_free(b"/lost+found", escape(path))
 
                 self.conn.execute('UPDATE contents SET name_id=?, parent_inode=? '
                                   'WHERE name_id=? AND parent_inode=?',
@@ -612,7 +610,7 @@ class Fsck(object):
 
                 elif cnt is None:
                     self.found_errors = True
-                    (id_p, name) = self.resolve_free(b"/lost+found", b"block-%d" % id_)
+                    (id_p, name) = self.resolve_free(b"/lost+found", ("block-%d" % id_).encode())
                     self.log_error("Block %d not referenced, adding as /lost+found/%s", id_, name)
                     timestamp = time.time()
                     size = self.conn.get_val('SELECT size FROM blocks WHERE id=?', (id_,))
@@ -836,14 +834,15 @@ class Fsck(object):
         try:
             for (i, obj_name) in enumerate(self.backend.list('s3ql_data_')):
 
-                if i != 0 and i % 5000 == 0:
-                    log.info('..processed %d objects so far..', i)
+                if i % 500 == 0 and sys.stdout.isatty():
+                    sys.stdout.write('\r..processed %d objects so far..' % i)
+                    sys.stdout.flush()
 
                 # We only bother with data objects
                 try:
                     obj_id = int(obj_name[10:])
                 except ValueError:
-                    log.warn("Ignoring unexpected object %r", obj_name)
+                    log.warning("Ignoring unexpected object %r", obj_name)
                     continue
 
                 self.conn.execute('INSERT INTO obj_ids VALUES(?)', (obj_id,))
@@ -884,8 +883,7 @@ class Fsck(object):
                                                                  'FROM contents_v WHERE inode=?', (id_,)):
                         path = get_path(id_p, self.conn, name)
                         self.log_error("File may lack data, moved to /lost+found: %s", path)
-                        (_, newname) = self.resolve_free(b"/lost+found",
-                                                            path[1:].replace('_', '__').replace('/', '_'))
+                        (_, newname) = self.resolve_free(b"/lost+found", escape(path))
 
                         self.conn.execute('UPDATE contents SET name_id=?, parent_inode=? '
                                           'WHERE name_id=? AND parent_inode=?',
@@ -899,9 +897,12 @@ class Fsck(object):
                 self.conn.execute("DELETE FROM blocks WHERE obj_id=?", (obj_id,))
                 self.conn.execute("DELETE FROM objects WHERE id=?", (obj_id,))
         finally:
+            if sys.stdout.isatty():
+                sys.stdout.write('\n')
+                
             self.conn.execute('DROP TABLE obj_ids')
             self.conn.execute('DROP TABLE IF EXISTS missing')
-
+            
 
     def check_objects_size(self):
         """Check objects.size"""
@@ -941,7 +942,7 @@ class Fsck(object):
                 self.conn.get_val("SELECT inode FROM contents_v "
                                   "WHERE name=? AND parent_inode=?", (newname, inode_p))
                 i += 1
-                newname = name + bytes(i)
+                newname = name + str(i).encode()
 
         except NoSuchRowError:
             pass
@@ -980,8 +981,9 @@ class ROFsck(Fsck):
         db = Connection(path + '.db')
         db.execute('PRAGMA journal_mode = WAL')
 
-        param = pickle.load(open(path + '.params', 'rb'))
-        super(ROFsck, self).__init__(None, None, param, db)
+        with open(path + '.params', 'rb') as fh:
+            param = pickle.load(fh)
+        super().__init__(None, None, param, db)
 
     def check(self):
 
@@ -1053,6 +1055,7 @@ def parse_args(args):
     parser.add_ssl()
     parser.add_version()
     parser.add_storage_url()
+    parser.add_fatal_warnings()
 
     parser.add_argument("--batch", action="store_true", default=False,
                       help="If user input is required, exit without prompting.")
@@ -1081,8 +1084,9 @@ def main(args=None):
     try:
         backend = get_backend(options)
     except DanglingStorageURLError as exc:
-        raise QuietError(str(exc))
-
+        raise QuietError(str(exc)) from None
+    atexit.register(backend.close)
+    
     log.info('Starting fsck of %s', options.storage_url)
     
     cachepath = get_backend_cachedir(options.storage_url, options.cachedir)
@@ -1091,7 +1095,8 @@ def main(args=None):
 
     if os.path.exists(cachepath + '.params'):
         assert os.path.exists(cachepath + '.db')
-        param = pickle.load(open(cachepath + '.params', 'rb'))
+        with open(cachepath + '.params', 'rb') as fh:
+            param = pickle.load(fh)
         if param['seq_no'] < seq_no:
             log.info('Ignoring locally cached metadata (outdated).')
             param = backend.lookup('s3ql_metadata')
@@ -1101,11 +1106,11 @@ def main(args=None):
             assert not os.path.exists(cachepath + '-cache') or param['needs_fsck']
 
         if param['seq_no'] > seq_no:
-            log.warn('File system has not been unmounted cleanly.')
+            log.warning('File system has not been unmounted cleanly.')
             param['needs_fsck'] = True
             
         elif backend.lookup('s3ql_metadata')['seq_no'] != param['seq_no']:
-            log.warn('Remote metadata is outdated.')
+            log.warning('Remote metadata is outdated.')
             param['needs_fsck'] = True
 
     else:
@@ -1156,31 +1161,34 @@ def main(args=None):
         try:
             # get_list may raise CorruptError itself
             res = db.get_list('PRAGMA integrity_check(20)')
-            if res[0][0] != u'ok':
+            if res[0][0] != 'ok':
                 log.error('\n'.join(x[0] for x in res))
                 raise apsw.CorruptError()
         except apsw.CorruptError:
             raise QuietError('Local metadata is corrupted. Remove or repair the following '
                              'files manually and re-run fsck:\n'
                              + cachepath + '.db (corrupted)\n'
-                             + cachepath + '.param (intact)')
+                             + cachepath + '.param (intact)') from None
     else:
-        def do_read(fh):
-            tmpfh = tempfile.TemporaryFile()
-            stream_read_bz2(fh, tmpfh)
-            return tmpfh
-        log.info('Downloading and decompressing metadata...')
-        tmpfh = backend.perform_read(do_read, "s3ql_metadata")
-        
-        log.info("Reading metadata...")
-        tmpfh.seek(0)
-        db = restore_metadata(tmpfh, cachepath + '.db')
+        with tempfile.TemporaryFile() as tmpfh:
+            def do_read(fh):
+                tmpfh.seek(0)
+                tmpfh.truncate()
+                stream_read_bz2(fh, tmpfh)
+
+            log.info('Downloading and decompressing metadata...')
+            backend.perform_read(do_read, "s3ql_metadata")
+            
+            log.info("Reading metadata...")
+            tmpfh.seek(0)
+            db = restore_metadata(tmpfh, cachepath + '.db')
 
     # Increase metadata sequence no 
     param['seq_no'] += 1
     param['needs_fsck'] = True
-    backend['s3ql_seq_no_%d' % param['seq_no']] = 'Empty'
-    pickle.dump(param, open(cachepath + '.params', 'wb'), 2)
+    backend['s3ql_seq_no_%d' % param['seq_no']] = b'Empty'
+    with open(cachepath + '.params', 'wb') as fh:
+        pickle.dump(param, fh, PICKLE_PROTOCOL)
 
     fsck = Fsck(cachepath + '-cache', backend, param, db)
     fsck.check()
@@ -1198,28 +1206,31 @@ def main(args=None):
         param['max_inode'] = db.get_val('SELECT MAX(id) FROM inodes')
 
     if fsck.found_errors and not param['needs_fsck']:
-        log.warn('File system was marked as clean, yet fsck found problems.')
-        log.warn('Please report this to the S3QL mailing list, http://groups.google.com/group/s3ql')
+        log.warning('File system was marked as clean, yet fsck found problems.')
+        log.warning('Please report this to the S3QL mailing list, http://groups.google.com/group/s3ql')
 
-    cycle_metadata(backend)
     param['needs_fsck'] = False
     param['last_fsck'] = time.time()
     param['last-modified'] = time.time()
 
     log.info('Dumping metadata...')
-    fh = tempfile.TemporaryFile()
-    dump_metadata(db, fh)
-    def do_write(obj_fh):
-        fh.seek(0)
-        stream_write_bz2(fh, obj_fh)
-        return obj_fh
-
-    log.info("Compressing and uploading metadata...")
-    obj_fh = backend.perform_write(do_write, "s3ql_metadata", metadata=param,
-                                  is_compressed=True)
+    with tempfile.TemporaryFile() as fh:
+        dump_metadata(db, fh)
+        def do_write(obj_fh):
+            fh.seek(0)
+            stream_write_bz2(fh, obj_fh)
+            return obj_fh
+    
+        log.info("Compressing and uploading metadata...")
+        obj_fh = backend.perform_write(do_write, "s3ql_metadata_new", metadata=param,
+                                      is_compressed=True)
     log.info('Wrote %.2f MiB of compressed metadata.', obj_fh.get_obj_size() / 1024 ** 2)
-    pickle.dump(param, open(cachepath + '.params', 'wb'), 2)
+    log.info('Cycling metadata backups...')
+    cycle_metadata(backend)
+    with open(cachepath + '.params', 'wb') as fh:
+        pickle.dump(param, fh, PICKLE_PROTOCOL)
 
+    log.info('Cleaning up local metadata...')
     db.execute('ANALYZE')
     db.execute('VACUUM')
     db.close()
@@ -1281,6 +1292,11 @@ def renumber_inodes(db):
 
     db.execute('DROP TABLE inode_map')
 
+
+def escape(path):
+    '''Escape slashes in path so that is usable as a file name'''
+    
+    return path[1:].replace(b'_', b'__').replace(b'/', b'_')
 
 if __name__ == '__main__':
     main(sys.argv[1:])

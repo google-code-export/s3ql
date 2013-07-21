@@ -6,28 +6,48 @@ Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-
-from s3ql.backends import local, s3, gs, s3c, swift
+from s3ql.backends import local, s3, gs, s3c, swift, rackspace
 from s3ql.backends.common import (ChecksumError, ObjectNotEncrypted, NoSuchObject,
-    BetterBackend)
-import ConfigParser
+    BetterBackend, get_ssl_context, AuthenticationError, AuthorizationError,
+    DanglingStorageURLError, MalformedObjectError)
+from argparse import Namespace
+import configparser
 import os
 import stat
 import tempfile
 import time
-import unittest2 as unittest
+import unittest
+
+RETRY_DELAY = 1
 
 class BackendTestsMixin(object):
 
     def newname(self):
         self.name_cnt += 1
         # Include special characters
-        return "s3ql_=/_%d" % self.name_cnt
+        return "s3ql/<tag=%d>/!sp ace_'quote\":_&end\\" % self.name_cnt
 
+    def newvalue(self):
+        return self.newname().encode()
+
+    def retry(self, fn, *exceptions):
+        tries = 0
+        while True:
+            try:
+                return fn()
+            except Exception as exc:
+                if not isinstance(exc, exceptions):
+                    raise
+                if tries >= self.retries:
+                    raise
+                tries += 1
+                time.sleep(RETRY_DELAY)
+            else:
+                break
+        
     def test_write(self):
         key = self.newname()
-        value = self.newname()
+        value = self.newvalue()
         metadata = { 'jimmy': 'jups@42' }
 
         self.assertRaises(NoSuchObject, self.backend.lookup, key)
@@ -36,172 +56,293 @@ class BackendTestsMixin(object):
         with self.backend.open_write(key, metadata) as fh:
             fh.write(value)
 
-        time.sleep(self.delay)
+        def read():
+            with self.backend.open_read(key) as fh:
+                return (fh.read(), fh.metadata)
+        (value2, metadata2) = self.retry(read, NoSuchObject)
 
-        with self.backend.open_read(key) as fh:
-            value2 = fh.read()
-
-        self.assertEquals(value, value2)
-        self.assertEquals(metadata, fh.metadata)
-        self.assertEquals(self.backend[key], value)
-        self.assertEquals(self.backend.lookup(key), metadata)
+        self.assertEqual(value, value2)
+        self.assertEqual(metadata, metadata2)
+        self.assertEqual(self.backend[key], value)
+        self.assertEqual(self.backend.lookup(key), metadata)
 
     def test_setitem(self):
         key = self.newname()
-        value = self.newname()
+        value = self.newvalue()
         metadata = { 'jimmy': 'jups@42' }
 
         self.assertRaises(NoSuchObject, self.backend.lookup, key)
         self.assertRaises(NoSuchObject, self.backend.__getitem__, key)
 
         with self.backend.open_write(key, metadata) as fh:
-            fh.write(self.newname())
-        time.sleep(self.delay)
+            fh.write(self.newvalue())
+
+        def read():
+            with self.backend.open_read(key) as fh:
+                return fh.read()
+        self.retry(read, NoSuchObject)
+
         self.backend[key] = value
-        time.sleep(self.delay)
 
-        with self.backend.open_read(key) as fh:
-            value2 = fh.read()
+        def reread():
+            with self.backend.open_read(key) as fh:
+                value2 = fh.read()
 
-        self.assertEquals(value, value2)
-        self.assertEquals(fh.metadata, dict())
-        self.assertEquals(self.backend.lookup(key), dict())
+            self.assertEqual(value, value2)
+            self.assertEqual(fh.metadata, None)
+            self.assertEqual(self.backend.lookup(key), None)
+        self.retry(reread, NoSuchObject, AssertionError)
 
     def test_contains(self):
         key = self.newname()
-        value = self.newname()
+        value = self.newvalue()
 
         self.assertFalse(key in self.backend)
         self.backend[key] = value
-        time.sleep(self.delay)
-        self.assertTrue(key in self.backend)
+
+        self.retry(lambda: self.assertTrue(key in self.backend),
+                   AssertionError)
 
     def test_delete(self):
         key = self.newname()
-        value = self.newname()
+        value = self.newvalue()
+
         self.backend[key] = value
-        time.sleep(self.delay)
 
-        self.assertTrue(key in self.backend)
+        self.retry(lambda: self.assertTrue(key in self.backend),
+                   AssertionError)
+
         del self.backend[key]
-        time.sleep(self.delay)
-        self.assertFalse(key in self.backend)
+        
+        self.retry(lambda: self.assertFalse(key in self.backend),
+                   AssertionError)
 
+        
+    def test_delete_multi(self):
+        keys = [ self.newname() for _ in range(5) ]
+        value = self.newvalue()
+
+        for key in keys:
+            self.backend[key] = value
+        for key in keys:
+            self.retry(lambda: self.assertTrue(key in self.backend), AssertionError)
+
+        tmp = keys[:2]
+        self.backend.delete_multi(tmp)
+        self.assertEqual(len(tmp), 0)
+
+        for key in keys[:2]:
+            self.retry(lambda: self.assertFalse(key in self.backend),
+                       AssertionError)
+
+        for key in keys[2:]:
+            self.retry(lambda: self.assertTrue(key in self.backend), AssertionError)
+
+            
+    def test_delete_multi2(self):
+        keys = [ self.newname() for _ in range(5) ]
+        non_existing = self.newname()
+        value = self.newvalue()
+
+        for key in keys:
+            self.backend[key] = value
+        for key in keys:
+            self.retry(lambda: self.assertTrue(key in self.backend), AssertionError)
+
+        tmp = keys[:2]
+        tmp.insert(1, non_existing)
+        try:
+            # We don't use force=True but catch the exemption to increase the
+            # chance that some existing objects are not deleted because of the
+            # error.
+            self.backend.delete_multi(tmp)
+        except NoSuchObject:
+            pass
+        
+        for key in keys[:2]:
+            if key in tmp:
+                self.retry(lambda: self.assertTrue(key in self.backend),
+                           AssertionError)
+            else:
+                self.retry(lambda: self.assertTrue(key not in self.backend),
+                           AssertionError)
+
+        for key in keys[2:]:
+            self.retry(lambda: self.assertTrue(key in self.backend), AssertionError)
+
+            
     def test_clear(self):
         key1 = self.newname()
         key2 = self.newname()
-        self.backend[key1] = self.newname()
-        self.backend[key2] = self.newname()
+        self.backend[key1] = self.newvalue()
+        self.backend[key2] = self.newvalue()
 
-        time.sleep(self.delay)
-        self.assertEquals(len(list(self.backend)), 2)
+        def check1():
+            self.assertTrue(key1 in self.backend)
+            self.assertTrue(key2 in self.backend)
+            self.assertEqual(len(list(self.backend)), 2)
+        self.retry(check1, AssertionError)
+        
         self.backend.clear()
-        time.sleep(5*self.delay)
-        self.assertTrue(key1 not in self.backend)
-        self.assertTrue(key2 not in self.backend)
-        self.assertEquals(len(list(self.backend)), 0)
+
+        def check2():
+            self.assertTrue(key1 not in self.backend)
+            self.assertTrue(key2 not in self.backend)
+            self.assertEqual(len(list(self.backend)), 0)
+        self.retry(check2, AssertionError)
+
 
     def test_list(self):
 
         keys = [ self.newname() for dummy in range(12) ]
-        values = [ self.newname() for dummy in range(12) ]
+        values = [ self.newvalue() for dummy in range(12) ]
         for i in range(12):
             self.backend[keys[i]] = values[i]
 
-        time.sleep(self.delay)
-        self.assertEquals(sorted(self.backend.list()), sorted(keys))
+        self.retry(lambda: self.assertEqual(sorted(self.backend.list()), sorted(keys)),
+                   AssertionError)
 
     def test_copy(self):
 
         key1 = self.newname()
         key2 = self.newname()
-        value = self.newname()
+        value = self.newvalue()
         self.assertRaises(NoSuchObject, self.backend.lookup, key1)
         self.assertRaises(NoSuchObject, self.backend.lookup, key2)
 
         self.backend.store(key1, value)
-        time.sleep(self.delay)
+
+        self.retry(lambda: self.assertTrue(key1 in self.backend),
+                   AssertionError)
+        self.retry(lambda: self.assertEqual(self.backend[key1], value),
+                   NoSuchObject)
+        
         self.backend.copy(key1, key2)
 
-        time.sleep(self.delay)
-        self.assertEquals(self.backend[key2], value)
+        self.retry(lambda: self.assertTrue(key2 in self.backend),
+                   AssertionError)
+        self.retry(lambda: self.assertEqual(self.backend[key2], value),
+                   NoSuchObject)
 
     def test_rename(self):
 
         key1 = self.newname()
         key2 = self.newname()
-        value = self.newname()
+        value = self.newvalue()
         self.assertRaises(NoSuchObject, self.backend.lookup, key1)
         self.assertRaises(NoSuchObject, self.backend.lookup, key2)
 
         self.backend.store(key1, value)
-        time.sleep(self.delay)
+
+        self.retry(lambda: self.assertTrue(key1 in self.backend),
+                   AssertionError)
+        self.retry(lambda: self.assertEqual(self.backend[key1], value),
+                   NoSuchObject)
+        
         self.backend.rename(key1, key2)
 
-        time.sleep(self.delay)
-        self.assertEquals(self.backend[key2], value)
-        self.assertRaises(NoSuchObject, self.backend.lookup, key1)
+        def check2():
+            self.assertTrue(key2 in self.backend)
+            self.assertTrue(key1 not in self.backend)
+            self.assertRaises(NoSuchObject, self.backend.lookup, key1)
+        self.retry(check2, AssertionError, NoSuchObject)
+        self.retry(lambda: self.assertEqual(self.backend[key2], value),
+                   NoSuchObject)
 
-# This test just takes too long (because we have to wait really long so that we don't
-# get false errors due to propagation delays)
-#@unittest.skip('takes too long')
-class S3Tests(BackendTestsMixin, unittest.TestCase):
-    def setUp(self):
-        self.name_cnt = 0
-        # This is the time in which we expect S3 changes to propagate. It may
-        # be much longer for larger objects, but for tests this is usually enough.
-        self.delay = 15
-
-        self.backend = s3.Backend(*self.get_credentials('s3-test'), use_ssl=False)
-
-    def tearDown(self):
-        self.backend.clear()
-
-    def get_credentials(self, name):
-
+def get_remote_test_info(name, skipTest):
         authfile = os.path.expanduser('~/.s3ql/authinfo2')
         if not os.path.exists(authfile):
-            self.skipTest('No authentication file found.')
+            skipTest('No authentication file found.')
 
         mode = os.stat(authfile).st_mode
         if mode & (stat.S_IRGRP | stat.S_IROTH):
-            self.skipTest("Authentication file has insecure permissions")
+            skipTest("Authentication file has insecure permissions")
 
-        config = ConfigParser.SafeConfigParser()
+        config = configparser.ConfigParser()
         config.read(authfile)
 
         try:
             fs_name = config.get(name, 'test-fs')
             backend_login = config.get(name, 'backend-login')
             backend_password = config.get(name, 'backend-password')
-        except (ConfigParser.NoOptionError, ConfigParser.NoSectionError):
-            self.skipTest("Authentication file does not have test section")
+        except (configparser.NoOptionError, configparser.NoSectionError):
+            skipTest("Authentication file does not have %s section" % name)
 
-        return (fs_name, backend_login, backend_password)
+        # Append prefix to make sure that we're starting with an empty bucket
+        if fs_name[-1] != '/':
+            fs_name += '/'
+        fs_name += 's3ql_test_%d/' % time.time()
 
-class S3SSLTests(S3Tests):
+        return (backend_login, backend_password, fs_name)
+
+
+class S3Tests(BackendTestsMixin, unittest.TestCase):
+        
     def setUp(self):
         self.name_cnt = 0
-        self.delay = 15
-        self.backend = s3.Backend(*self.get_credentials('s3-test'), use_ssl=True)
+        self.retries = 45
+
+        self.setUp2(s3.Backend, 's3-test')
+
+    def setUp2(self, backend_class, backend_fs_name):
         
+        options = Namespace()
+        options.no_ssl = False
+        options.ssl_ca_path = None
+
+        (backend_login, backend_password,
+         fs_name) = get_remote_test_info(backend_fs_name, self.skipTest)
+        
+        self.backend = backend_class(fs_name, backend_login, backend_password,
+                                     ssl_context=get_ssl_context(options))
+
+        try:
+            self.backend.fetch('empty_object')
+        except DanglingStorageURLError:
+            raise unittest.SkipTest('Bucket %s does not exist' % fs_name) from None
+        except AuthorizationError:
+            raise unittest.SkipTest('No permission to access %s' % fs_name) from None
+        except AuthenticationError:
+            raise unittest.SkipTest('Unable to access %s, invalid credentials or skewed '
+                                    'system clock?' % fs_name) from None
+        except NoSuchObject:
+            pass
+        else:
+            raise unittest.SkipTest('Test bucket not empty') from None
+
+    def tearDown(self):
+        self.backend.clear()
+
+
 class SwiftTests(S3Tests):
     def setUp(self):
         self.name_cnt = 0
-        self.delay = 0
-        self.backend = swift.Backend(*self.get_credentials('swift-test'))
-        
+        self.retries = 90
+
+        self.setUp2(swift.Backend, 'swift-test')
+
+class RackspaceTests(S3Tests):
+    def setUp(self):
+        self.name_cnt = 0
+        self.retries = 90
+
+        self.setUp2(rackspace.Backend, 'rackspace-test')
+
 class GSTests(S3Tests):
     def setUp(self):
         self.name_cnt = 0
-        self.delay = 15
-        self.backend = gs.Backend(*self.get_credentials('gs-test'), use_ssl=False)
-        
+        self.retries = 90
+
+        self.setUp2(gs.Backend, 'gs-test')
+
+
 class S3CTests(S3Tests):
     def setUp(self):
         self.name_cnt = 0
-        self.delay = 0
-        self.backend = s3c.Backend(*self.get_credentials('s3c-test'), use_ssl=False)   
+        self.retries = 90
+
+        self.setUp2(s3c.Backend, 's3c-test')
+
 
 class URLTests(unittest.TestCase):
     
@@ -209,44 +350,44 @@ class URLTests(unittest.TestCase):
     #pylint: disable=W0212
      
     def test_s3(self):
-        self.assertEquals(s3.Backend._parse_storage_url('s3://name', use_ssl=False)[2:],
+        self.assertEqual(s3.Backend._parse_storage_url('s3://name', ssl_context=None)[2:],
                           ('name', ''))
-        self.assertEquals(s3.Backend._parse_storage_url('s3://name/', use_ssl=False)[2:],
+        self.assertEqual(s3.Backend._parse_storage_url('s3://name/', ssl_context=None)[2:],
                           ('name', ''))
-        self.assertEquals(s3.Backend._parse_storage_url('s3://name/pref/', use_ssl=False)[2:],
+        self.assertEqual(s3.Backend._parse_storage_url('s3://name/pref/', ssl_context=None)[2:],
                           ('name', 'pref/'))
-        self.assertEquals(s3.Backend._parse_storage_url('s3://name//pref/', use_ssl=False)[2:],
+        self.assertEqual(s3.Backend._parse_storage_url('s3://name//pref/', ssl_context=None)[2:],
                           ('name', '/pref/'))
 
     def test_gs(self):
-        self.assertEquals(gs.Backend._parse_storage_url('gs://name', use_ssl=False)[2:],
+        self.assertEqual(gs.Backend._parse_storage_url('gs://name', ssl_context=None)[2:],
                           ('name', ''))
-        self.assertEquals(gs.Backend._parse_storage_url('gs://name/', use_ssl=False)[2:],
+        self.assertEqual(gs.Backend._parse_storage_url('gs://name/', ssl_context=None)[2:],
                           ('name', ''))
-        self.assertEquals(gs.Backend._parse_storage_url('gs://name/pref/', use_ssl=False)[2:],
+        self.assertEqual(gs.Backend._parse_storage_url('gs://name/pref/', ssl_context=None)[2:],
                           ('name', 'pref/'))
-        self.assertEquals(gs.Backend._parse_storage_url('gs://name//pref/', use_ssl=False)[2:],
+        self.assertEqual(gs.Backend._parse_storage_url('gs://name//pref/', ssl_context=None)[2:],
                           ('name', '/pref/'))
                         
     def test_s3c(self):
-        self.assertEquals(s3c.Backend._parse_storage_url('s3c://host.org/name', use_ssl=False),
+        self.assertEqual(s3c.Backend._parse_storage_url('s3c://host.org/name', ssl_context=None),
                           ('host.org', 80, 'name', ''))
-        self.assertEquals(s3c.Backend._parse_storage_url('s3c://host.org:23/name', use_ssl=False),
+        self.assertEqual(s3c.Backend._parse_storage_url('s3c://host.org:23/name', ssl_context=None),
                           ('host.org', 23, 'name', ''))
-        self.assertEquals(s3c.Backend._parse_storage_url('s3c://host.org/name/', use_ssl=False),
+        self.assertEqual(s3c.Backend._parse_storage_url('s3c://host.org/name/', ssl_context=None),
                           ('host.org', 80, 'name', ''))
-        self.assertEquals(s3c.Backend._parse_storage_url('s3c://host.org/name/pref', use_ssl=False),
+        self.assertEqual(s3c.Backend._parse_storage_url('s3c://host.org/name/pref', ssl_context=None),
                           ('host.org', 80, 'name', 'pref'))
-        self.assertEquals(s3c.Backend._parse_storage_url('s3c://host.org:17/name/pref/', use_ssl=False),
+        self.assertEqual(s3c.Backend._parse_storage_url('s3c://host.org:17/name/pref/', ssl_context=None),
                           ('host.org', 17, 'name', 'pref/'))
-                                
+
 class LocalTests(BackendTestsMixin, unittest.TestCase):
 
     def setUp(self):
         self.name_cnt = 0
-        self.backend_dir = tempfile.mkdtemp()
+        self.backend_dir = tempfile.mkdtemp(prefix='s3ql-backend-')
         self.backend = local.Backend('local://' + self.backend_dir, None, None)
-        self.delay = 0
+        self.retries = 0
 
     def tearDown(self):
         self.backend.clear()
@@ -256,13 +397,13 @@ class CompressionTests(BackendTestsMixin, unittest.TestCase):
 
     def setUp(self):
         self.name_cnt = 0
-        self.backend_dir = tempfile.mkdtemp()
+        self.backend_dir = tempfile.mkdtemp(prefix='s3ql-backend-')
         self.plain_backend = local.Backend('local://' + self.backend_dir, None, None)
         self.backend = self._wrap_backend()
-        self.delay = 0
+        self.retries = 0
 
     def _wrap_backend(self):
-        return BetterBackend(None, 'zlib', self.plain_backend)
+        return BetterBackend(None, ('zlib', 6), self.plain_backend)
 
     def tearDown(self):
         self.backend.clear()
@@ -271,38 +412,38 @@ class CompressionTests(BackendTestsMixin, unittest.TestCase):
 class EncryptionTests(CompressionTests):
 
     def _wrap_backend(self):
-        return BetterBackend('schlurz', None, self.plain_backend)
+        return BetterBackend(b'schluz', (None, 0), self.plain_backend)
 
     def test_encryption(self):
 
         self.plain_backend['plain'] = b'foobar452'
-        self.backend.store('encrypted', 'testdata', { 'tag': True })
-        time.sleep(self.delay)
-        self.assertEquals(self.backend['encrypted'], b'testdata')
-        self.assertNotEquals(self.plain_backend['encrypted'], b'testdata')
-        self.assertRaises(ObjectNotEncrypted, self.backend.fetch, 'plain')
-        self.assertRaises(ObjectNotEncrypted, self.backend.lookup, 'plain')
+        self.backend.store('encrypted', b'testdata', { 'tag': True })
+        
+        def check1():
+            self.assertEqual(self.backend['encrypted'], b'testdata')
+            self.assertNotEqual(self.plain_backend['encrypted'], b'testdata')
+            self.assertRaises(MalformedObjectError, self.backend.fetch, 'plain')
+            self.assertRaises(MalformedObjectError, self.backend.lookup, 'plain')
+        self.retry(check1, NoSuchObject)
 
         self.backend.passphrase = None
-        self.assertRaises(ChecksumError, self.backend.fetch, 'encrypted')
-        self.assertRaises(ChecksumError, self.backend.lookup, 'encrypted')
+        self.backend.store('not-encrypted', b'testdata2395', { 'tag': False })
+        def check2():
+            self.assertRaises(ChecksumError, self.backend.fetch, 'encrypted')
+            self.assertRaises(ChecksumError, self.backend.lookup, 'encrypted')
+        self.retry(check2, NoSuchObject)
 
-        self.backend.passphrase = 'jobzrul'
-        self.assertRaises(ChecksumError, self.backend.fetch, 'encrypted')
-        self.assertRaises(ChecksumError, self.backend.lookup, 'encrypted')
 
+        self.backend.passphrase = b'jobzrul'
+        def check3():
+            self.assertRaises(ChecksumError, self.backend.fetch, 'encrypted')
+            self.assertRaises(ChecksumError, self.backend.lookup, 'encrypted')
+            self.assertRaises(ObjectNotEncrypted, self.backend.fetch, 'not-encrypted')
+            self.assertRaises(ObjectNotEncrypted, self.backend.lookup, 'not-encrypted')
+        self.retry(check3, NoSuchObject)
 
+        
 class EncryptionCompressionTests(EncryptionTests):
 
     def _wrap_backend(self):
-        return BetterBackend('schlurz', 'zlib', self.plain_backend)
-
-
-# Somehow important according to pyunit documentation
-def suite():
-    return unittest.makeSuite(LocalTests)
-
-
-# Allow calling from command line
-if __name__ == "__main__":
-    unittest.main()
+        return BetterBackend(b'schlurz', ('zlib', 6), self.plain_backend)

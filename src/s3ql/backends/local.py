@@ -6,27 +6,26 @@ Copyright (C) 2008-2009 Nikolaus Rath <Nikolaus@rath.org>
 This program can be distributed under the terms of the GNU GPLv3.
 '''
 
-from __future__ import division, print_function, absolute_import
-
+from ..logging import logging # Ensure use of custom logger class
+from ..common import BUFSIZE, PICKLE_PROTOCOL
+from ..inherit_docstrings import (copy_ancestor_docstring, ABCDocstMeta)
 from .common import AbstractBackend, DanglingStorageURLError, NoSuchObject, ChecksumError
-from ..common import BUFSIZE
-import shutil
-import logging
-import cPickle as pickle
+import _thread
+import io
 import os
-import errno
-import thread
+import pickle
+import shutil
 
-log = logging.getLogger("backend.local")
+log = logging.getLogger(__name__)
 
-class Backend(AbstractBackend):
+class Backend(AbstractBackend, metaclass=ABCDocstMeta):
     '''
     A backend that stores data on the local hard disk
     '''
 
     needs_login = False
 
-    def __init__(self, storage_url, backend_login, backend_pw, use_ssl=False):
+    def __init__(self, storage_url, backend_login, backend_pw, ssl_context=None):
         '''Initialize local backend
         
         Login and password are ignored.
@@ -34,7 +33,7 @@ class Backend(AbstractBackend):
         # Unused argument
         #pylint: disable=W0613
 
-        super(Backend, self).__init__()
+        super().__init__()
         name = storage_url[len('local://'):]
         self.name = name
 
@@ -42,109 +41,71 @@ class Backend(AbstractBackend):
             raise DanglingStorageURLError(name)
 
     def __str__(self):
-        return 'local://%s' % self.name
+        return 'local directory %s' % self.name
 
+    @copy_ancestor_docstring
     def is_temp_failure(self, exc): #IGNORE:W0613
-        '''Return true if exc indicates a temporary error'''
-
         return False
 
+    @copy_ancestor_docstring
     def lookup(self, key):
-        """Return metadata for given key.
-
-        If the key does not exist, `NoSuchObject` is raised.
-        """
-
         path = self._key_to_path(key)
         try:
             with open(path, 'rb') as src:
                 return pickle.load(src)
-        except IOError as exc:
-            if exc.errno == errno.ENOENT:
-                raise NoSuchObject(key)
-            else:
-                raise
+        except FileNotFoundError:
+            raise NoSuchObject(key) from None
         except pickle.UnpicklingError as exc:
             if (isinstance(exc.args[0], str)
                 and exc.args[0].startswith('invalid load key')):
-                raise ChecksumError('Invalid metadata')
+                raise ChecksumError('Invalid metadata') from None
             raise
 
+    @copy_ancestor_docstring
     def get_size(self, key):
-        '''Return size of object stored under *key*'''
-
         return os.path.getsize(self._key_to_path(key))
 
+    @copy_ancestor_docstring
     def open_read(self, key):
-        """Open object for reading
-
-        Return a file-like object. Data can be read using the `read` method. metadata is stored in
-        its *metadata* attribute and can be modified by the caller at will. The object must be
-        closed explicitly.
-        """
-
         path = self._key_to_path(key)
         try:
             fh = ObjectR(path)
-        except IOError as exc:
-            if exc.errno == errno.ENOENT:
-                raise NoSuchObject(key)
-            else:
-                raise
-
+        except FileNotFoundError:
+            raise NoSuchObject(key) from None
+        
         try:
             fh.metadata = pickle.load(fh)
         except pickle.UnpicklingError as exc:
             if (isinstance(exc.args[0], str)
                 and exc.args[0].startswith('invalid load key')):
-                raise ChecksumError('Invalid metadata')
+                raise ChecksumError('Invalid metadata') from None
             raise
         return fh
 
+    @copy_ancestor_docstring
     def open_write(self, key, metadata=None, is_compressed=False):
-        """Open object for writing
-
-        `metadata` can be a dict of additional attributes to store with the object. Returns a file-
-        like object. The object must be closed explicitly. After closing, the *get_obj_size* may be
-        used to retrieve the size of the stored object (which may differ from the size of the
-        written data).
-        
-        The *is_compressed* parameter indicates that the caller is going to write compressed data,
-        and may be used to avoid recompression by the backend.
-        """
-
-        if metadata is None:
-            metadata = dict()
-
-
         path = self._key_to_path(key)
 
         # By renaming, we make sure that there are no
         # conflicts between parallel reads, the last one wins
-        tmpname = '%s#%d-%d' % (path, os.getpid(), thread.get_ident())
+        tmpname = '%s#%d-%d' % (path, os.getpid(), _thread.get_ident())
 
         try:
             dest = ObjectW(tmpname)
-        except IOError as exc:
-            if exc.errno != errno.ENOENT:
-                raise
+        except FileNotFoundError:
             try:
                 os.makedirs(os.path.dirname(path))
-            except OSError as exc:
-                if exc.errno != errno.EEXIST:
-                    raise
-                else:
-                    # Another thread may have created the directory already
-                    pass
+            except FileExistsError:
+                # Another thread may have created the directory already
+                pass
             dest = ObjectW(tmpname)
 
         os.rename(tmpname, path)
-        pickle.dump(metadata, dest, 2)
+        pickle.dump(metadata, dest, PICKLE_PROTOCOL)
         return dest
 
+    @copy_ancestor_docstring
     def clear(self):
-        """Delete all objects in backend"""
-
         for name in os.listdir(self.name):
             path = os.path.join(self.name, name)
             if os.path.isdir(path):
@@ -152,41 +113,29 @@ class Backend(AbstractBackend):
             else:
                 os.unlink(path)
 
+    @copy_ancestor_docstring
     def contains(self, key):
-        '''Check if `key` is in backend'''
-
         path = self._key_to_path(key)
         try:
             os.lstat(path)
-        except OSError as exc:
-            if exc.errno == errno.ENOENT:
-                return False
-            raise
+        except FileNotFoundError:
+            return False
         return True
 
+    @copy_ancestor_docstring
     def delete(self, key, force=False):
-        """Delete object stored under `key`
-
-        ``backend.delete(key)`` can also be written as ``del backend[key]``.
-        If `force` is true, do not return an error if the key does not exist.
-        """
         path = self._key_to_path(key)
         try:
             os.unlink(path)
-        except OSError as exc:
-            if exc.errno == errno.ENOENT:
-                if force:
-                    pass
-                else:
-                    raise NoSuchObject(key)
+        except FileNotFoundError:
+            if force:
+                pass
             else:
-                raise
+                raise NoSuchObject(key) from None
 
+    @copy_ancestor_docstring
     def list(self, prefix=''):
-        '''List keys in backend
 
-        Returns an iterator over all keys in the backend.
-        '''
         if prefix:
             base = os.path.dirname(self._key_to_path(prefix))
         else:
@@ -212,12 +161,8 @@ class Backend(AbstractBackend):
                 if not prefix or key.startswith(prefix):
                     yield key
 
+    @copy_ancestor_docstring
     def copy(self, src, dest):
-        """Copy data stored under key `src` to key `dest`
-        
-        If `dest` already exists, it will be overwritten.
-        """
-
         path_src = self._key_to_path(src)
         path_dest = self._key_to_path(dest)
 
@@ -225,35 +170,24 @@ class Backend(AbstractBackend):
         # sure destination path exists
         try:
             dest = open(path_dest, 'wb')
-        except IOError as exc:
-            if exc.errno != errno.ENOENT:
-                raise
+        except FileNotFoundError:
             try:
                 os.makedirs(os.path.dirname(path_dest))
-            except OSError as exc:
-                if exc.errno != errno.EEXIST:
-                    raise
-                else:
-                    # Another thread may have created the directory already
-                    pass
+            except FileExistsError:
+                # Another thread may have created the directory already
+                pass
             dest = open(path_dest, 'wb')
 
         try:
             with open(path_src, 'rb') as src:
                 shutil.copyfileobj(src, dest, BUFSIZE)
-        except IOError as exc:
-            if exc.errno == errno.ENOENT:
-                raise NoSuchObject(src)
-            else:
-                raise
+        except FileNotFoundError:
+            raise NoSuchObject(src) from None
         finally:
             dest.close()
 
+    @copy_ancestor_docstring
     def rename(self, src, dest):
-        """Rename key `src` to `dest`
-        
-        If `dest` already exists, it will be overwritten.
-        """
         src_path = self._key_to_path(src)
         dest_path = self._key_to_path(dest)
         if not os.path.exists(src_path):
@@ -261,17 +195,12 @@ class Backend(AbstractBackend):
 
         try:
             os.rename(src_path, dest_path)
-        except OSError as exc:
-            if exc.errno != errno.ENOENT:
-                raise
+        except FileNotFoundError:
             try:
                 os.makedirs(os.path.dirname(dest_path))
-            except OSError as exc:
-                if exc.errno != errno.EEXIST:
-                    raise
-                else:
-                    # Another thread may have created the directory already
-                    pass
+            except FileExistsError:
+                # Another thread may have created the directory already
+                pass
             os.rename(src_path, dest_path)
 
     def _key_to_path(self, key):
@@ -311,19 +240,31 @@ def unescape(s):
 
     return s
 
-class ObjectR(file):
+
+# Inherit from io.FileIO rather than io.BufferedReader to disable buffering. Default buffer size is
+# ~8 kB (http://docs.python.org/3/library/functions.html#open), but backends are almost always only
+# accessed by block_cache and stream_read_bz2/stream_write_bz2, which all use the much larger
+# s3ql.common.BUFSIZE
+class ObjectR(io.FileIO):
     '''A local storage object opened for reading'''
 
+
     def __init__(self, name, metadata=None):
-        super(ObjectR, self).__init__(name, 'rb', buffering=0)
+        super().__init__(name)
         self.metadata = metadata
 
 class ObjectW(object):
     '''A local storage object opened for writing'''
 
     def __init__(self, name):
-        super(ObjectW, self).__init__()
-        self.fh = open(name, 'wb', 0)
+        super().__init__()
+
+        # Inherit from io.FileIO rather than io.BufferedReader to disable buffering. Default buffer
+        # size is ~8 kB (http://docs.python.org/3/library/functions.html#open), but backends are
+        # almost always only accessed by block_cache and stream_read_bz2/stream_write_bz2, which all
+        # use the much larger s3ql.common.BUFSIZE
+        self.fh = open(name, 'wb', buffering=0)
+        
         self.obj_size = 0
         self.closed = False
 

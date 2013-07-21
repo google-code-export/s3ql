@@ -24,13 +24,11 @@ from its parent (which could be a shell or some other process)". In this case th
 with that.
 '''
 
-from __future__ import division, print_function
-
+from .logging import logging # Ensure use of custom logger class
 import os
 import sys
-import logging
 
-log = logging.getLogger('daemonize')
+log = logging.getLogger(__name__)
 
 def daemonize(workdir='/'):
     '''Daemonize the process'''
