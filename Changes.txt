@@ -1,4 +1,4 @@
-UNRELEASED, S3QL tip
+UNRELEASED, S3QL tip 
 
   * Attempts to upgrade a file system that is already at the newest
     revision no longer render the local metadata copy unusable.
