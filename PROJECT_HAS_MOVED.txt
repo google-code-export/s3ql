@@ -1,9 +1,12 @@
 The S3QL repository has moved to BitBucket. Please update
 your Mercurial repository URL to
 
-[hg clone] https://nikratio@bitbucket.org/nikratio/s3ql
+  https://bitbucket.org/nikratio/s3ql
 
-(no history has been lost in the move)
+(there is no need to you make a fresh clone of the repository, you may simply 
+ edit the URL in the .hg/hgrc file in the project directory)
+
+
 
 
 
