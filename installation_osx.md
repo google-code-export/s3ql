@@ -1,0 +1,1 @@
+# This page has moved to https://bitbucket.org/nikratio/s3ql/wiki/installation_osx - please update your links! #

@@ -1,0 +1,1 @@
+# The S3QL Wiki has been moved to https://bitbucket.org/nikratio/s3ql/wiki/Home - please update your links! #

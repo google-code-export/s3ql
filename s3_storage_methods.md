@@ -1,0 +1,1 @@
+# This page has moved to https://bitbucket.org/nikratio/s3ql/wiki/Overview%20of%20Cloud%20Storage%20Techniques - please update your links! #

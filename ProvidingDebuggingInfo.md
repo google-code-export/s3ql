@@ -1,0 +1,1 @@
+# This page has moved to https://bitbucket.org/nikratio/s3ql/wiki/Providing%20Debugging%20Info - please update your links! #

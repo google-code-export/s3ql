@@ -1,0 +1,1 @@
+# The S3QL sources have moved to https://bitbucket.org/nikratio/s3ql/src - please update your links! #

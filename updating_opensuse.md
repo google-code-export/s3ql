@@ -1,0 +1,1 @@
+# This page has moved to https://bitbucket.org/nikratio/s3ql/wiki/Updating%20OpenSUSE%20Packages - please update your links! #

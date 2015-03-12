@@ -1,0 +1,1 @@
+# This page has moved to https://bitbucket.org/nikratio/s3ql/wiki/Influences%20on%20other%20projects - please update your links! #

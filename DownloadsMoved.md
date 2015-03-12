@@ -1,0 +1,1 @@
+## The S3QL homepage has moved to bitbucket! Please update your links! The new download page can be found at https://bitbucket.org/nikratio/s3ql/downloads ##
